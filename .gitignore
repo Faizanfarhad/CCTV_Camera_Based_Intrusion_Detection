@@ -1,10 +1,28 @@
 
 
+#removed my own vs-code config 
 .vscode/
 
-#removing the testing 
+
+#removing the testing videos 
 testVideo/
 
+# removed the python cache 
 __pycache__/**
 
+#removed my tasks info 
 what_to_do.txt
+
+
+track_work_with_date.txt
+
+testing.ipynb
+
+yolov8n.pt
+
+saved_videos/
+
+# SQLite database created by Backend/store.py
+data/
+
+.env

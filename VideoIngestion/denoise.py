@@ -1,5 +1,4 @@
 import cv2
-import numpy as np
 
 
 def denoise_frame(frame, method="fast", strength=10):

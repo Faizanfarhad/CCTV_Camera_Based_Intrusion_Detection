@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sentinel — CCTV Intrusion Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<style>
+  :root { --glow: #22d3ee; }
+  * { box-sizing: border-box; }
+  body { background: #05070f; color: #e2e8f0; font-family: ui-sans-serif, system-ui, sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @keyframes scan {
+    0% { top: -10%; } 100% { top: 110%; }
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239,68,68,.6); }
+    50% { opacity: .6; box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+  }
+  @keyframes float-in {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes ring { to { transform: rotate(360deg); } }
+  @keyframes slide-in {
+    from { opacity: 0; transform: translateX(-18px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes blink { 50% { opacity: .35; } }
+
+  .scanline {
+    position: absolute; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--glow), transparent);
+    animation: scan 4s linear infinite;
+  }
+  .live-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+  .float-in { animation: float-in .5s cubic-bezier(.22,1,.36,1) both; }
+  .slide-in { animation: slide-in .45s cubic-bezier(.22,1,.36,1) both; }
+  .grid-bg {
+    background-image: linear-gradient(rgba(34,211,238,.07) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(34,211,238,.07) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  .glass { background: rgba(15,23,42,.6); backdrop-filter: blur(12px); border: 1px solid rgba(51,65,85,.5); }
+  .cam-feed { position: relative; overflow: hidden; background: radial-gradient(circle at 30% 30%, #0f172a, #020617); }
+  .cam-feed::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 3px);
+  }
+  .spinner { border: 2px solid rgba(34,211,238,.2); border-top-color: var(--glow); border-radius: 50%; animation: ring .8s linear infinite; }
+  .tag-glow { box-shadow: 0 0 18px rgba(34,211,238,.25); }
+  .card { transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; }
+  .card:hover { transform: translateY(-3px); border-color: rgba(34,211,238,.4); box-shadow: 0 12px 30px -12px rgba(34,211,238,.25); }
+  .nav-item { transition: all .2s ease; }
+  .nav-item.active { background: linear-gradient(90deg, rgba(34,211,238,.15), transparent); color: #67e8f9; border-left: 3px solid #22d3ee; }
+  .zone-polygon { transition: fill .2s ease, filter .2s ease; cursor: pointer; }
+  .zone-polygon:hover { filter: drop-shadow(0 0 6px rgba(34,211,238,.8)); }
+  .alert-row { transition: background .2s ease; }
+  .alert-row:hover { background: rgba(30,41,59,.6); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+/* ---------------- Icons (inline SVG) ---------------- */
+const I = {
+  camera: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M15 10l4.5-2.5v9L15 14"/><rect x="3" y="6" width="13" height="12" rx="2"/></svg>,
+  alert: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l9 16H3l9-16z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".5"/></svg>,
+  zone: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 4h7l2 3h7v13H4z"/></svg>,
+  history: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/><path d="M12 7v5l3 2"/></svg>,
+  shield: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l8 3v6c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V6l8-3z"/></svg>,
+  search: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>,
+  bolt: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>,
+  check: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 13l4 4L19 7"/></svg>,
+  pin: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>,
+  trash: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>,
+  play: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M7 4l14 8-14 8V4z"/></svg>,
+  pause: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>,
+  grid: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>,
+};
+
+/* ---------------- Mock data + WS stub ---------------- */
+const CAMERAS = [
+  { id: "cam-01", name: "Perimeter Gate", status: "online", fps: 14, res: "1080p" },
+  { id: "cam-02", name: "Server Room",   status: "online", fps: 12, res: "720p"  },
+  { id: "cam-03", name: "Warehouse Bay", status: "online", fps: 15, res: "1080p" },
+  { id: "cam-04", name: "Parking Lot",   status: "offline", fps: 0,  res: "—"    },
+];
+
+const INITIAL_ALERTS = [
+  { id: 1, cam: "Server Room",   zone: "Zone B — Restricted", time: "14:32:05", conf: 0.96, type: "intrusion", handled: false },
+  { id: 2, cam: "Perimeter Gate", zone: "Zone A — Perimeter", time: "14:18:44", conf: 0.91, type: "intrusion", handled: false },
+  { id: 3, cam: "Warehouse Bay", zone: "Zone C — Loading",   time: "13:57:12", conf: 0.88, type: "loitering", handled: true  },
+  { id: 4, cam: "Server Room",   zone: "Zone B — Restricted", time: "12:41:09", conf: 0.94, type: "intrusion", handled: true  },
+  { id: 5, cam: "Parking Lot",   zone: "Zone D — North",     time: "11:03:27", conf: 0.79, type: "intrusion", handled: true  },
+];
+
+const ZONES = [
+  { id: "z1", name: "Zone A — Perimeter", color: "#22d3ee", pts: [[18,22],[38,14],[58,18],[52,38],[28,44]] },
+  { id: "z2", name: "Zone B — Restricted", color: "#f43f5e", pts: [[62,16],[80,18],[78,40],[60,42]] },
+];
+
+const MOCK_BOXES = [
+  { x: 58, y: 40, w: 16, h: 34, conf: 0.96, zone: "Zone B" },
+  { x: 24, y: 30, w: 14, h: 30, conf: 0.88, zone: "Zone A" },
+];
+
+// Map a backend/WebSocket alert payload to the shape the dashboard renders.
+function normalizeAlert(d) {
+  const src = d || {};
+  const ts = src.timestamp || src.time || src.created_at;
+  const time = ts
+    ? (isNaN(new Date(ts)) ? String(ts) : new Date(ts).toLocaleTimeString("en-GB"))
+    : new Date().toLocaleTimeString("en-GB");
+  return {
+    id: src.id ?? src.event_id ?? Date.now(),
+    cam: src.cam || src.camera || src.camera_name || src.camera_id || "Unknown",
+    zone: src.zone || src.zone_name || "Zone",
+    time,
+    conf: Number(src.conf ?? src.confidence ?? src.score ?? 0),
+    type: src.type || (src.loitering ? "loitering" : "intrusion"),
+    handled: Boolean(src.handled),
+  };
+}
+
+/* ---------------- Backend API helpers ---------------- */
+// When served by FastAPI the dashboard is same-origin; when opened directly via
+// file:// we fall back to localhost. This keeps both development flows working.
+const API = location.protocol === "file:" ? "http://localhost:8000" : "";
+const wsUrl = location.host
+  ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`
+  : "ws://localhost:8000/ws";
+
+async function apiFetch(path, opts) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  return res.json();
+}
+
+/* ---------------- Live feed overlay ---------------- */
+function LiveFeed({ cam, boxes, zonePts, streamUrl }) {
+  return (
+    <div className="cam-feed rounded-2xl h-full min-h-[300px]">
+      <div className="scanline" />
+      {/* real backend stream */}
+      {streamUrl ? (
+        <img src={streamUrl} alt={cam.name} className="absolute inset-0 w-full h-full object-contain bg-black" />
+      ) : (
+        /* fake offline scene */
+        <svg viewBox="0 0 100 60" preserveAspectRatio="none" className="absolute inset-0 w-full h-full opacity-90">
+          <rect x="0" y="0" width="100" height="60" fill="url(#g0)" />
+          <defs>
+            <linearGradient id="g0" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stopColor="#0b1220"/><stop offset="1" stopColor="#05070f"/>
+            </linearGradient>
+          </defs>
+          {/* floor */}
+          <polygon points="0,46 100,46 100,60 0,60" fill="#0e1626" />
+          <line x1="0" y1="46" x2="100" y2="46" stroke="#1e293b" strokeWidth="0.4"/>
+          {/* static structures */}
+          <rect x="6" y="18" width="10" height="28" fill="#16202f" />
+          <rect x="82" y="14" width="12" height="32" fill="#16202f" />
+          <rect x="44" y="26" width="12" height="20" fill="#111b2b" />
+          {/* zones */}
+          {zonePts.map((z, i) => (
+            <polygon key={i} points={z.pts.map(p=>p.join(",")).join(" ")} fill={z.color} fillOpacity="0.12"
+              stroke={z.color} strokeWidth="0.5" strokeDasharray="1.5 1" className="zone-polygon" />
+          ))}
+          {/* detected person boxes */}
+          {boxes.map((b, i) => (
+            <g key={i}>
+              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="#f43f5e" strokeWidth="0.6" />
+              <rect x={b.x} y={b.y-2} width={b.w} height="2" fill="#f43f5e" opacity="0.9"/>
+              <text x={b.x} y={b.y-2.6} fill="#fda4af" fontSize="2.4" fontFamily="monospace">
+                PERSON {b.conf.toFixed(2)} · {b.zone}
+              </text>
+            </g>
+          ))}
+        </svg>
+      )}
+      {/* HUD */}
+      <div className="absolute top-3 left-3 flex items-center gap-2">
+        <span className="live-dot w-2.5 h-2.5 rounded-full bg-red-500" />
+        <span className="text-[11px] font-semibold tracking-widest text-red-300">LIVE</span>
+      </div>
+      <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-300/80 bg-black/40 px-2 py-1 rounded">
+        {cam.fps} FPS · {cam.res}
+      </div>
+      <div className="absolute bottom-3 left-3 text-[11px] font-mono text-slate-400">
+        {cam.name} — {cam.id}
+      </div>
+      <div className="absolute bottom-3 right-3 flex items-center gap-1 text-[10px] font-mono text-slate-500">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span> ENCRYPTED
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Pages ---------------- */
+function LivePage({ cameras, zones, backendOnline, stats }) {
+  const [selected, setSelected] = useState("cam-01");
+  const [playing, setPlaying] = useState(true);
+  const [boxes, setBoxes] = useState(MOCK_BOXES);
+  const cam = cameras.find(c => c.id === selected) || cameras[0];
+  const streamUrl = backendOnline && cam && cam.status === "online" && cam.stream ? API + cam.stream : null;
+
+  useEffect(() => {
+    if (!playing || backendOnline) return;
+    const t = setInterval(() => {
+      setBoxes(prev => prev.map(b => ({
+        ...b,
+        x: Math.max(2, Math.min(84, b.x + (Math.random()*2 - 1))),
+        y: Math.max(10, Math.min(30, b.y + (Math.random()*1 - 0.5))),
+        conf: Math.min(0.99, Math.max(0.7, b.conf + (Math.random()*0.04 - 0.02))),
+      })));
+    }, 600);
+    return () => clearInterval(t);
+  }, [playing, backendOnline]);
+
+  const online = stats?.cameras_online ?? cameras.filter(c => c.status === "online").length;
+
+  return (
+    <div className="float-in space-y-4">
+      {/* stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: "Cameras Online", val: `${online}/${cameras.length}`, icon: I.camera, tone: "text-cyan-300" },
+          { label: "Active Zones", val: stats?.active_zones ?? zones.length, icon: I.zone, tone: "text-violet-300" },
+          { label: "Detections (24h)", val: stats?.detections_24h ?? "142", icon: I.alert, tone: "text-rose-300" },
+          { label: "Avg Confidence", val: stats ? `${(stats.avg_confidence*100).toFixed(1)}%` : "92.4%", icon: I.shield, tone: "text-emerald-300" },
+        ].map((s, i) => (
+          <div key={i} className="glass card rounded-2xl p-4 flex items-center gap-3" style={{ animationDelay: `${i*80}ms` }}>
+            <div className={`w-11 h-11 rounded-xl bg-slate-800/60 grid place-items-center ${s.tone}`}>{s.icon({ className: "w-5 h-5" })}</div>
+            <div>
+              <div className="text-2xl font-bold">{s.val}</div>
+              <div className="text-xs text-slate-400">{s.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid lg:grid-cols-3 gap-4">
+        {/* main feed */}
+        <div className="lg:col-span-2 glass rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <I.camera className="w-4 h-4 text-cyan-300" /> Live Feed — {cam.name}
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setPlaying(p => !p)}
+                className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition">
+                {playing ? <I.pause className="w-4 h-4"/> : <I.play className="w-4 h-4"/>}
+              </button>
+            </div>
+          </div>
+          <div className="h-[340px] md:h-[420px]">
+            <LiveFeed cam={cam} boxes={boxes} zonePts={zones} streamUrl={streamUrl} />
+          </div>
+        </div>
+
+        {/* camera list */}
+        <div className="glass rounded-2xl p-4">
+          <div className="text-sm font-semibold mb-3 flex items-center gap-2">
+            <I.grid className="w-4 h-4 text-cyan-300" /> Cameras
+          </div>
+          <div className="space-y-2">
+            {cameras.map(c => (
+              <button key={c.id} onClick={() => setSelected(c.id)}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition border ${selected === c.id ? "border-cyan-500/50 bg-cyan-500/10" : "border-slate-800 bg-slate-900/40 hover:bg-slate-800/50"}`}>
+                <div className={`relative w-16 h-10 rounded-lg cam-feed shrink-0`}>
+                  <div className="absolute inset-0 grid place-items-center text-slate-500"><I.camera className="w-4 h-4"/></div>
+                  <span className={`absolute top-1 right-1 w-1.5 h-1.5 rounded-full ${c.status==="online"?"bg-emerald-400":"bg-slate-600"}`}/>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{c.name}</div>
+                  <div className="text-[11px] text-slate-400 font-mono">{c.id} · {c.status === "online" ? `${c.fps} FPS` : "offline"}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlertsPage({ alerts, onToggle }) {
+  const [filter, setFilter] = useState("all");
+  const [q, setQ] = useState("");
+  const filtered = alerts.filter(a =>
+    (filter === "all" || a.type === filter) &&
+    (a.cam + a.zone).toLowerCase().includes(q.toLowerCase())
+  );
+  const handled = alerts.filter(a => a.handled).length;
+
+  const typeTone = t => t === "intrusion" ? "bg-rose-500/15 text-rose-300 border-rose-500/30" : "bg-amber-500/15 text-amber-300 border-amber-500/30";
+
+  return (
+    <div className="float-in space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[220px]">
+          <I.search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500"/>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search camera or zone…"
+            className="w-full bg-slate-900/60 border border-slate-800 rounded-xl pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/50 transition" />
+        </div>
+        <div className="flex gap-1 bg-slate-900/60 border border-slate-800 rounded-xl p-1">
+          {[["all","All"],["intrusion","Intrusions"],["loitering","Loitering"]].map(([k,l]) => (
+            <button key={k} onClick={()=>setFilter(k)}
+              className={`px-3 py-1.5 text-xs rounded-lg transition ${filter===k ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* live alert ticker */}
+      <div className="glass rounded-2xl p-4 flex items-center gap-3 overflow-hidden">
+        <span className="live-dot w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />
+        <div className="relative flex-1 overflow-hidden h-6">
+          <div className="absolute inset-0 flex items-center" style={{ animation: "float-in .4s ease both" }}>
+            <span className="text-sm font-mono text-rose-200 whitespace-nowrap">
+              ⚠ {alerts[0]?.cam} · {alerts[0]?.zone} · {alerts[0]?.time} · conf {alerts[0]?.conf?.toFixed?.(2)}
+            </span>
+          </div>
+        </div>
+        <span className="text-xs text-slate-400 shrink-0">{handled}/{alerts.length} handled</span>
+      </div>
+
+      <div className="glass rounded-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <div className="text-sm font-semibold flex items-center gap-2"><I.history className="w-4 h-4 text-cyan-300"/> Alert History</div>
+          <span className="text-xs text-slate-400">{filtered.length} events</span>
+        </div>
+        <div className="max-h-[420px] overflow-y-auto">
+          {filtered.map((a, i) => (
+            <div key={a.id} className="alert-row slide-in flex items-center gap-3 px-4 py-3 border-b border-slate-800/60"
+              style={{ animationDelay: `${i*40}ms` }}>
+              <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wide border ${typeTone(a.type)}`}>{a.type}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{a.cam}</div>
+                <div className="text-[11px] text-slate-400 truncate">{a.zone}</div>
+              </div>
+              <div className="hidden sm:block text-xs font-mono text-slate-400">{a.time}</div>
+              <div className="hidden md:block w-16 text-right">
+                <div className="text-xs font-mono text-cyan-300">{(a.conf*100).toFixed(0)}%</div>
+              </div>
+              <button onClick={()=>onToggle(a)}
+                className={`w-8 h-8 rounded-lg grid place-items-center transition border ${a.handled ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300" : "bg-slate-800 border-slate-700 text-slate-400 hover:text-emerald-300"}`}
+                title="Mark handled">
+                <I.check className="w-4 h-4"/>
+              </button>
+            </div>
+          ))}
+          {filtered.length === 0 && <div className="p-10 text-center text-slate-500 text-sm">No alerts match.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ZonePage({ zones, onAddZone, onDeleteZone }) {
+  const [active, setActive] = useState(zones[0]?.id);
+  const [drawing, setDrawing] = useState(false);
+  const [pts, setPts] = useState([]);
+  const svgRef = useRef(null);
+  const zone = zones.find(z => z.id === active) || zones[0];
+
+  const svgPoint = (e) => {
+    const r = svgRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100));
+    const y = Math.max(0, Math.min(60, ((e.clientY - r.top) / r.height) * 60));
+    return [x, y];
+  };
+
+  const addPoint = (e) => {
+    if (!drawing) return;
+    const p = svgPoint(e);
+    setPts(prev => [...prev, p.map(v => Math.round(v))]);
+  };
+
+  const finishZone = () => {
+    if (pts.length >= 3) {
+      const newZone = {
+        name: `Zone ${String.fromCharCode(65+zones.length)} — Custom`,
+        color: `hsl(${(zones.length*70)%360} 80% 60%)`,
+        pts,
+      };
+      onAddZone(newZone);
+    }
+    setPts([]); setDrawing(false);
+  };
+
+  return (
+    <div className="float-in grid lg:grid-cols-3 gap-4">
+      {/* editor canvas */}
+      <div className="lg:col-span-2 glass rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-semibold flex items-center gap-2"><I.zone className="w-4 h-4 text-violet-300"/> Zone Editor</div>
+          <div className="flex gap-2">
+            <button onClick={() => { setDrawing(true); setPts([]); }}
+              className={`px-3 py-1.5 text-xs rounded-lg transition border ${drawing ? "bg-violet-500/20 border-violet-500/40 text-violet-200" : "bg-slate-800 border-slate-700 hover:bg-slate-700"}`}>
+              {drawing ? `Drawing… ${pts.length} pts` : "Draw Zone"}
+            </button>
+            <button onClick={finishZone} disabled={pts.length < 3}
+              className="px-3 py-1.5 text-xs rounded-lg bg-cyan-500/20 border border-cyan-500/40 text-cyan-200 transition disabled:opacity-40 disabled:cursor-not-allowed">
+              Save Zone
+            </button>
+          </div>
+        </div>
+        <div className="grid-bg rounded-xl border border-slate-800 relative overflow-hidden">
+          <svg ref={svgRef} viewBox="0 0 100 60" preserveAspectRatio="none" className="w-full h-[380px] cursor-crosshair" onClick={addPoint}>
+            <rect x="0" y="0" width="100" height="60" fill="rgba(2,6,23,.4)"/>
+            {/* existing zones */}
+            {zones.map(z => (
+              <g key={z.id} className="zone-polygon" onClick={(e)=>{e.stopPropagation(); setActive(z.id);}}>
+                <polygon points={z.pts.map(p=>p.join(",")).join(" ")} fill={z.color} fillOpacity={z.id===active?0.3:0.12}
+                  stroke={z.color} strokeWidth={z.id===active?1:0.5} strokeDasharray={z.id===active?"none":"1.5 1"}/>
+                {z.pts.map((p,i)=>(
+                  <circle key={i} cx={p[0]} cy={p[1]} r="1" fill={z.color} />
+                ))}
+              </g>
+            ))}
+            {/* in-progress polygon */}
+            {drawing && pts.length > 1 && (
+              <polygon points={pts.map(p=>p.join(",")).join(" ")} fill="#a78bfa" fillOpacity="0.2" stroke="#a78bfa" strokeWidth="0.6" strokeDasharray="1 0.8"/>
+            )}
+            {pts.map((p,i)=>(
+              <circle key={i} cx={p[0]} cy={p[1]} r="1.2" fill="#a78bfa" className="live-dot" style={{ filter:"drop-shadow(0 0 3px #a78bfa)" }}/>
+            ))}
+          </svg>
+          {drawing && <div className="absolute top-3 left-3 text-[11px] font-mono text-violet-300 bg-black/50 px-2 py-1 rounded animate-pulse">Click to place points — min 3, then Save</div>}
+        </div>
+      </div>
+
+      {/* zone list */}
+      <div className="glass rounded-2xl p-4">
+        <div className="text-sm font-semibold mb-3 flex items-center gap-2"><I.pin className="w-4 h-4 text-violet-300"/> Restricted Zones</div>
+        <div className="space-y-2">
+          {zones.map(z => (
+            <div key={z.id} onClick={()=>setActive(z.id)}
+              className={`p-3 rounded-xl border cursor-pointer transition ${active===z.id ? "border-violet-500/50 bg-violet-500/10" : "border-slate-800 bg-slate-900/40 hover:bg-slate-800/50"}`}>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-sm" style={{ background: z.color, boxShadow: `0 0 10px ${z.color}` }}/>
+                <span className="text-sm font-medium flex-1 truncate">{z.name}</span>
+                <button onClick={(e)=>{e.stopPropagation(); onDeleteZone(z.id);}}
+                  className="text-slate-500 hover:text-rose-400 transition"><I.trash className="w-4 h-4"/></button>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">{z.pts.length} vertices · active 24/7</div>
+            </div>
+          ))}
+          {zones.length === 0 && <div className="text-center text-slate-500 text-sm py-8">No zones. Draw one on the canvas.</div>}
+        </div>
+        <div className="mt-4 p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
+          <I.bolt className="w-3.5 h-3.5 inline text-amber-300 mr-1"/> Intrusion triggers when a detected person's centroid falls inside any zone for &gt; 0.5s. Alerts are debounced 30s per zone.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- App shell ---------------- */
+function App() {
+  const [page, setPage] = useState("live");
+  const [alerts, setAlerts] = useState(INITIAL_ALERTS);
+  const [zones, setZones] = useState(ZONES);
+  const [cameras, setCameras] = useState(CAMERAS);
+  const [stats, setStats] = useState({
+    cameras_online: CAMERAS.filter(c => c.status === "online").length,
+    cameras_total: CAMERAS.length,
+    active_zones: ZONES.length,
+    detections_24h: 142,
+    avg_confidence: 0.924,
+  });
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [ws, setWs] = useState("connecting");
+  const [clock, setClock] = useState(new Date());
+
+  // clock
+  useEffect(() => {
+    const t = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Initial load from FastAPI + periodic camera/stat refresh.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [camRes, zoneRes, alertRes, statRes] = await Promise.all([
+          apiFetch("/api/cameras"),
+          apiFetch("/api/zones"),
+          apiFetch("/api/alerts?limit=200"),
+          apiFetch("/api/stats"),
+        ]);
+        if (cancelled) return;
+        setCameras(camRes);
+        setZones(zoneRes);
+        setAlerts(alertRes.map(normalizeAlert));
+        setStats(statRes);
+        setBackendOnline(true);
+      } catch {
+        if (!cancelled) setBackendOnline(false);
+      }
+    })();
+    const t = setInterval(async () => {
+      try {
+        const [camRes, statRes] = await Promise.all([
+          apiFetch("/api/cameras"),
+          apiFetch("/api/stats"),
+        ]);
+        if (!cancelled) {
+          setCameras(camRes);
+          setStats(statRes);
+          setBackendOnline(true);
+        }
+      } catch {
+        if (!cancelled) setBackendOnline(false);
+      }
+    }, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
+  // Simulated alerts only when the backend is offline (keeps the UI demo-able).
+  useEffect(() => {
+    if (backendOnline) return;
+    const t = setInterval(() => {
+      if (Math.random() > 0.65) {
+        const c = CAMERAS[Math.floor(Math.random()*3)];
+        setAlerts(prev => [{ id: Date.now(), cam: c.name, zone: zones[Math.floor(Math.random()*zones.length)]?.name || "Zone", time: new Date().toLocaleTimeString("en-GB"), conf: 0.85 + Math.random()*0.14, type: Math.random()>0.8?"loitering":"intrusion", handled: false }, ...prev].slice(0, 30));
+      }
+    }, 6000);
+    return () => clearInterval(t);
+  }, [backendOnline, zones]);
+
+  // WebSocket: real-time alerts, zones and stats pushed by FastAPI.
+  useEffect(() => {
+    let sock;
+    try {
+      sock = new WebSocket(wsUrl);
+      sock.onopen = () => { setWs("connected"); setBackendOnline(true); };
+      sock.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "alert") {
+            const a = normalizeAlert(msg.data);
+            setAlerts(prev => [a, ...prev.filter(x => x.id !== a.id)].slice(0, 200));
+          } else if (msg.type === "zones") {
+            setZones(msg.data);
+          } else if (msg.type === "stats") {
+            setStats(msg.data);
+          } else if (msg.type === "cameras") {
+            setCameras(msg.data);
+          }
+        } catch {}
+      };
+      sock.onclose = () => setWs("offline");
+      sock.onerror = () => setWs("offline");
+    } catch { setWs("offline"); }
+    return () => sock && sock.close();
+  }, []);
+
+  const addZone = async (zone) => {
+    try {
+      const created = await apiFetch("/api/zones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(zone),
+      });
+      setZones(prev => [...prev, created]);
+    } catch {
+      setZones(prev => [...prev, { id: `z${Date.now()}`, ...zone }]);
+    }
+  };
+
+  const deleteZone = async (id) => {
+    setZones(prev => prev.filter(z => z.id !== id));
+    try {
+      await apiFetch(`/api/zones/${id}`, { method: "DELETE" });
+    } catch {}
+  };
+
+  const toggleAlert = async (a) => {
+    const next = !a.handled;
+    setAlerts(prev => prev.map(x => x.id === a.id ? { ...x, handled: next } : x));
+    try {
+      await apiFetch(`/api/alerts/${a.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ handled: next }),
+      });
+    } catch {}
+  };
+
+  const nav = [
+    { key: "live", label: "Live Feed", icon: I.camera },
+    { key: "alerts", label: "Alerts & History", icon: I.alert },
+    { key: "zones", label: "Zone Config", icon: I.zone },
+  ];
+
+  return (
+    <div className="min-h-screen flex">
+      {/* sidebar */}
+      <aside className="hidden md:flex w-60 flex-col fixed inset-y-0 glass border-r border-slate-800">
+        <div className="p-5 flex items-center gap-3 border-b border-slate-800">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 to-violet-500 grid place-items-center tag-glow">
+            <I.shield className="w-6 h-6 text-slate-900"/>
+          </div>
+          <div>
+            <div className="font-bold text-lg tracking-tight">Sentinel</div>
+            <div className="text-[10px] text-slate-400 uppercase tracking-widest">Intrusion System</div>
+          </div>
+        </div>
+        <nav className="flex-1 p-3 space-y-1">
+          {nav.map(n => (
+            <button key={n.key} onClick={()=>setPage(n.key)}
+              className={`nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium ${page===n.key ? "active" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"}`}>
+              {n.icon({ className: "w-5 h-5" })} {n.label}
+            </button>
+          ))}
+        </nav>
+        <div className="p-4 border-t border-slate-800">
+          <div className={`flex items-center gap-2 text-xs ${ws==="connected" ? "text-emerald-300" : ws==="connecting" ? "text-amber-300" : "text-slate-500"}`}>
+            {ws === "connecting" ? <div className="spinner w-3.5 h-3.5"/> : <span className={`w-2 h-2 rounded-full ${ws==="connected"?"bg-emerald-400":"bg-slate-600"}`}/>}
+            Backend {ws}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">{wsUrl}</div>
+        </div>
+      </aside>
+
+      {/* main */}
+      <main className="flex-1 md:ml-60 p-4 md:p-6 space-y-4">
+        {/* topbar */}
+        <header className="glass rounded-2xl px-5 py-3.5 flex items-center justify-between">
+          <div className="flex md:hidden items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-violet-500 grid place-items-center"><I.shield className="w-4 h-4 text-slate-900"/></div>
+            <span className="font-bold">Sentinel</span>
+          </div>
+          <div className="hidden md:block text-sm font-semibold">
+            {nav.find(n=>n.key===page)?.label}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:block text-xs font-mono text-slate-400">
+              {clock.toLocaleDateString()} · <span className="text-cyan-300">{clock.toLocaleTimeString("en-GB")}</span>
+            </span>
+            <span className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${alerts.some(a=>!a.handled) ? "bg-rose-500/15 text-rose-300 border-rose-500/40" : "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"}`}>
+              {alerts.filter(a=>!a.handled).length > 0 ? `● ${alerts.filter(a=>!a.handled).length} unhandled` : "All clear"}
+            </span>
+          </div>
+        </header>
+
+        {/* mobile nav */}
+        <div className="md:hidden flex gap-2">
+          {nav.map(n => (
+            <button key={n.key} onClick={()=>setPage(n.key)}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-medium border ${page===n.key ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-300" : "bg-slate-900/60 border-slate-800 text-slate-400"}`}>
+              {n.icon({className:"w-4 h-4"})} {n.label.split(" ")[0]}
+            </button>
+          ))}
+        </div>
+
+        {page === "live" && <LivePage cameras={cameras} zones={zones} backendOnline={backendOnline} stats={stats} />}
+        {page === "alerts" && <AlertsPage alerts={alerts} onToggle={toggleAlert} />}
+        {page === "zones" && <ZonePage zones={zones} onAddZone={addZone} onDeleteZone={deleteZone} />}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
