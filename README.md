@@ -57,33 +57,33 @@ The project is split into three layers:
 
 ```mermaid
 flowchart TD
-    A[CCTV Camera / Video File] --> B[VideoIngestion<br/>OpenCV capture]
-    B --> C[Resize + Denoise<br/>denoise_frame]
-    C --> D[Motion Detection<br/>MOG2 background subtraction]
-    D --> E[Person Detection<br/>YOLOv8 person class]
-    E --> F[Zone / ROI Check<br/>centroid point-in-polygon]
-    F --> G{Person inside a<br/>restricted zone?}
-    G -- No --> B
-    G -- Yes --> H[Debounce + Log Event]
-    H --> I[Save Annotated Snapshot]
-    H --> J[Alert Module<br/>Email / WhatsApp]
-    H --> K[SQLite Event History]
-    H --> L[WebSocket Broadcast]
-    L --> M[React Dashboard<br/>Live Feed / Alerts / Zones]
+    A["CCTV Camera / Video File"] --> B["VideoIngestion<br/>OpenCV capture"]
+    B --> C["Resize + Denoise<br/>denoise_frame"]
+    C --> D["Motion Detection<br/>MOG2 background subtraction"]
+    D --> E["Person Detection<br/>YOLOv8 person class"]
+    E --> F["Zone / ROI Check<br/>centroid point-in-polygon"]
+    F --> G{"Person inside a restricted zone?"}
+    G -- "No" --> B
+    G -- "Yes" --> H["Debounce + Log Event"]
+    H --> I["Save Annotated Snapshot"]
+    H --> J["Alert Module<br/>Email / WhatsApp"]
+    H --> K["SQLite Event History"]
+    H --> L["WebSocket Broadcast"]
+    L --> M["React Dashboard<br/>Live Feed / Alerts / Zones"]
 ```
 
 ### Data-flow (FastAPI backend)
 
 ```mermaid
 flowchart LR
-    UI[React Dashboard] -->|GET/POST zones, alerts, stats| API[FastAPI REST]
-    UI -->|MJPEG live view| STREAM[/api/stream/id]
-    UI <-->|WebSocket /ws| WS[WebSocket Manager]
-    API --> DB[(SQLite<br/>zones + events)]
-    STREAM --> PROC[StreamProcessor thread]
+    UI["React Dashboard"] -->|"GET/POST zones, alerts, stats"| API["FastAPI REST"]
+    UI -->|"MJPEG live view"| STREAM["/api/stream/id"]
+    UI <-->|"WebSocket /ws"| WS["WebSocket Manager"]
+    API --> DB["SQLite zones + events"]
+    STREAM --> PROC["StreamProcessor thread"]
     PROC --> DB
     PROC --> WS
-    PROC --> ALERT[Alert System]
+    PROC --> ALERT["Alert System"]
 ```
 
 ### ASCII overview (from the original design)
