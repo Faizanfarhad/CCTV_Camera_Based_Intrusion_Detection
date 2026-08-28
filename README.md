@@ -1,4 +1,4 @@
-# Sentinel — AI-Powered CCTV Intrusion Detection System
+# Sentinel — AI-Powered CCTV Intrusion Detection System(WIP)
 
 A real-time CCTV intrusion detection system that watches live or recorded camera
 feeds, detects when a **person** enters a configured **restricted zone**, logs the
