@@ -1,0 +1,10 @@
+
+
+.vscode/
+
+#removing the testing 
+testVideo/
+
+__pycache__/**
+
+what_to_do.txt
