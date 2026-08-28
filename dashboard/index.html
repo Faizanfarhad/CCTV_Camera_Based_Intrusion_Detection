@@ -215,10 +215,36 @@ function LivePage({ cameras, zones, backendOnline, stats }) {
   const [selected, setSelected] = useState("cam-01");
   const [playing, setPlaying] = useState(true);
   const [boxes, setBoxes] = useState(MOCK_BOXES);
+  const [feedMode, setFeedMode] = useState("camera"); // "camera" | "live" | "video"
+  const [savedVideos, setSavedVideos] = useState([]);
+  const [selectedVideoId, setSelectedVideoId] = useState("");
   const cam = cameras.find(c => c.id === selected) || cameras[0];
-  const streamUrl = backendOnline && cam && cam.status === "online"
+
+  // Load the list of saved/recorded videos available for playback.
+  useEffect(() => {
+    if (!backendOnline) return;
+    apiFetch("/api/videos")
+      .then(videos => {
+        setSavedVideos(videos);
+        if (videos.length && !selectedVideoId) setSelectedVideoId(videos[0].id);
+      })
+      .catch(() => {});
+  }, [backendOnline]);
+
+  const cameraStreamUrl = backendOnline && cam && cam.status === "online"
     ? (cam.stream ? API + cam.stream : API + `/api/stream/${cam.id}`)
     : null;
+
+  let activeStreamUrl = cameraStreamUrl;
+  let displayCam = cam;
+  if (backendOnline && feedMode === "live") {
+    activeStreamUrl = API + "/api/stream/live";
+    displayCam = { id: "live", name: "Live Camera", fps: "—", res: "—" };
+  } else if (backendOnline && feedMode === "video" && selectedVideoId) {
+    activeStreamUrl = API + `/api/stream/video/${selectedVideoId}`;
+    const v = savedVideos.find(x => x.id === selectedVideoId);
+    displayCam = { id: "video", name: v ? v.name : "Saved Video", fps: "—", res: "—" };
+  }
 
   useEffect(() => {
     if (!playing || backendOnline) return;
@@ -258,11 +284,27 @@ function LivePage({ cameras, zones, backendOnline, stats }) {
       <div className="grid lg:grid-cols-3 gap-4">
         {/* main feed */}
         <div className="lg:col-span-2 glass rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2 text-sm font-semibold">
-              <I.camera className="w-4 h-4 text-cyan-300" /> Live Feed — {cam.name}
+              <I.camera className="w-4 h-4 text-cyan-300" /> {displayCam ? displayCam.name : "Live Feed"}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex rounded-xl overflow-hidden border border-slate-700">
+                <button onClick={() => setFeedMode("live")}
+                  className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${feedMode === "live" ? "bg-cyan-500/20 text-cyan-300" : "bg-slate-900/60 text-slate-400 hover:text-slate-200"}`}>
+                  <I.camera className="w-3.5 h-3.5" /> Live Camera
+                </button>
+                <button onClick={() => setFeedMode("video")}
+                  className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${feedMode === "video" ? "bg-violet-500/20 text-violet-300" : "bg-slate-900/60 text-slate-400 hover:text-slate-200"}`}>
+                  <I.history className="w-3.5 h-3.5" /> Saved Video
+                </button>
+              </div>
+              {feedMode === "video" && (
+                <select value={selectedVideoId} onChange={e => setSelectedVideoId(e.target.value)}
+                  className="bg-slate-900/80 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 max-w-[220px]">
+                  {savedVideos.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              )}
               <button onClick={() => setPlaying(p => !p)}
                 className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition">
                 {playing ? <I.pause className="w-4 h-4"/> : <I.play className="w-4 h-4"/>}
@@ -270,7 +312,7 @@ function LivePage({ cameras, zones, backendOnline, stats }) {
             </div>
           </div>
           <div className="h-[340px] md:h-[420px]">
-            <LiveFeed cam={cam} boxes={boxes} zonePts={zones} streamUrl={streamUrl} />
+            <LiveFeed cam={displayCam} boxes={boxes} zonePts={zones} streamUrl={activeStreamUrl} />
           </div>
         </div>
 
@@ -281,7 +323,7 @@ function LivePage({ cameras, zones, backendOnline, stats }) {
           </div>
           <div className="space-y-2">
             {cameras.map(c => (
-              <button key={c.id} onClick={() => setSelected(c.id)}
+              <button key={c.id} onClick={() => { setSelected(c.id); setFeedMode("camera"); }}
                 className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition border ${selected === c.id ? "border-cyan-500/50 bg-cyan-500/10" : "border-slate-800 bg-slate-900/40 hover:bg-slate-800/50"}`}>
                 <div className={`relative w-16 h-10 rounded-lg cam-feed shrink-0`}>
                   <div className="absolute inset-0 grid place-items-center text-slate-500"><I.camera className="w-4 h-4"/></div>

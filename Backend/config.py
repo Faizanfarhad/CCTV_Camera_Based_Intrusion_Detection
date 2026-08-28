@@ -57,6 +57,44 @@ SOURCES = [
         "res": "—",
     },
 ]
+# SOURCES2 = [
+#     {
+#         "id": "cam-01",
+#         "name": "Perimeter Gate",
+#         "kind": "video",
+#         "source": str(BASE_DIR / "testVideo" / "hit_and_run.mp4"),
+#         "enabled": True,
+#         "fps": 14,
+#         "res": "1080p",
+#     },
+#     {
+#         "id": "cam-02",
+#         "name": "Server Room",
+#         "kind": "video",
+#         "source": str(BASE_DIR / "testVideo" / "bird_video.mp4"),
+#         "enabled": True,
+#         "fps": 12,
+#         "res": "720p",
+#     },
+#     {
+#         "id": "cam-03",
+#         "name": "Warehouse Bay",
+#         "kind": "video",
+#         "source": str(BASE_DIR / "testVideo" / "animal_video.mp4"),
+#         "enabled": True,
+#         "fps": 15,
+#         "res": "1080p",
+#     },
+#     {
+#         "id": "cam-04",
+#         "name": "Parking Lot",
+#         "kind": "video",
+#         "source": str(BASE_DIR / "testVideo" / "columbina-moonlit-requiem.3840x2160.mp4"),
+#         "enabled": False,
+#         "fps": 0,
+#         "res": "—",
+#     },
+# ]
 
 # Default zones, matching the dashboard's initial configuration.
 DEFAULT_ZONES = [
@@ -82,3 +120,12 @@ ANOMALY_THRESHOLD = 0.02     # motion fraction inside a zone above which it is "
 ALERT_DEBOUNCE_SECONDS = 30  # one alert per zone within this window
 STREAM_FPS = 12              # target processing/streaming rate
 JPEG_QUALITY = 70
+
+# Live camera input (OpenCV device index) and folders scanned for saved videos.
+LIVE_CAMERA_INDEX = 0
+VIDEO_DIRS = [
+    BASE_DIR / "saved_videos",
+    BASE_DIR / "testVideo",
+]
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+

@@ -274,7 +274,7 @@ Three pages are available in the sidebar:
 
 | Page | What it does |
 |---|---|
-| **Live Feed** | Streams the selected camera with zone/detection overlays, shows camera status, active zones, 24h detections, and average confidence. |
+| **Live Feed** | Streams a camera with zone/detection overlays. Includes a **Live Camera / Saved Video** toggle: **Live Camera** streams the webcam (`/api/stream/live`), **Saved Video** lets you pick any recorded clip from `saved_videos/` or `testVideo/`. Also shows camera status, active zones, 24h detections, and average confidence. |
 | **Alerts & History** | Live alert ticker + searchable/filterable history, with a button to mark each alert handled. |
 | **Zone Config** | Draw polygon zones on a canvas, save them, and delete existing zones. |
 
@@ -298,7 +298,10 @@ Base URL: `http://localhost:8000`
 | `DELETE` | `/api/zones/{zone_id}` | Delete a zone. |
 | `GET` | `/api/alerts` | Alert history. Optional query params: `limit`, `type`, `q`. |
 | `PATCH` | `/api/alerts/{event_id}` | Mark an alert handled. Body: `{"handled": true}`. |
-| `GET` | `/api/stream/{camera_id}` | MJPEG live feed (`multipart/x-mixed-replace`). |
+| `GET` | `/api/videos` | List saved/recorded videos available for playback. |
+| `GET` | `/api/stream/live` | MJPEG stream from the live camera (OpenCV device `0`). |
+| `GET` | `/api/stream/video/{video_id}` | MJPEG stream of a saved video by its id from `/api/videos`. |
+| `GET` | `/api/stream/{camera_id}` | MJPEG live feed of a configured camera (`multipart/x-mixed-replace`). |
 
 Interactive docs are available at **http://localhost:8000/docs** (Swagger UI).
 
@@ -389,6 +392,14 @@ Each camera entry:
     "res": "1080p",
 }
 ```
+
+### Live camera & saved videos
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LIVE_CAMERA_INDEX` | `0` | OpenCV device index used by the **Live Camera** toggle. |
+| `VIDEO_DIRS` | `saved_videos/`, `testVideo/` | Folders scanned for the **Saved Video** dropdown. |
+| `VIDEO_EXTENSIONS` | `.mp4`, `.avi`, `.mov`, `.mkv` | File types listed in the dropdown. |
 
 ### Detection / streaming tuning
 

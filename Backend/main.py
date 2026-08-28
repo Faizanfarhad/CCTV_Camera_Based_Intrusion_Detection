@@ -8,13 +8,16 @@ Then open http://localhost:8000/ (the dashboard is served by the backend too).
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
+import cv2
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,7 +25,14 @@ from pydantic import BaseModel, Field
 
 from Backend import store
 from Backend import config as config_module
-from Backend.config import DASHBOARD_PATH, SOURCES
+from Backend.config import (
+    BASE_DIR,
+    DASHBOARD_PATH,
+    LIVE_CAMERA_INDEX,
+    SOURCES,
+    VIDEO_DIRS,
+    VIDEO_EXTENSIONS,
+)
 from Backend.processor import StreamManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -76,6 +86,42 @@ ws_manager = ConnectionManager()
 
 
 def find_camera(camera_id: str) -> Optional[dict]:
+    return next((c for c in SOURCES if c["id"] == camera_id), None)
+
+
+def _list_videos() -> list[dict]:
+    """List saved/recorded videos available for playback."""
+    videos = []
+    for directory in VIDEO_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*")):
+            if path.suffix.lower() in VIDEO_EXTENSIONS and path.is_file():
+                rel = path.relative_to(BASE_DIR).as_posix()
+                videos.append(
+                    {
+                        "id": base64.urlsafe_b64encode(rel.encode()).decode(),
+                        "name": rel,
+                        "path": str(path),
+                    }
+                )
+    return videos
+
+
+def _resolve_video(video_id: str) -> Optional[Path]:
+    """Resolve a video id from ``/api/videos`` back to a safe file path."""
+    try:
+        rel = base64.urlsafe_b64decode(video_id.encode()).decode()
+    except Exception:
+        return None
+    candidate = (BASE_DIR / rel).resolve()
+    for directory in VIDEO_DIRS:
+        root = directory.resolve()
+        if candidate == root or str(candidate).startswith(str(root) + os.sep):
+            if candidate.is_file() and candidate.suffix.lower() in VIDEO_EXTENSIONS:
+                return candidate
+    return None
+
     return next((c for c in SOURCES if c["id"] == camera_id), None)
 
 
@@ -251,6 +297,60 @@ def _mjpeg_generator(proc):
                 b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
             )
 
+
+
+
+@app.get("/api/videos")
+async def get_videos():
+    """List saved/recorded videos that can be played from the dashboard."""
+    return _list_videos()
+
+
+@app.get("/api/stream/live")
+async def stream_live():
+    """Stream the live camera (default OpenCV device index)."""
+    cap = cv2.VideoCapture(int(LIVE_CAMERA_INDEX))
+    if not cap.isOpened():
+        cap.release()
+        raise HTTPException(status_code=503, detail="Live camera not available.")
+    cap.release()
+
+    camera = {
+        "id": "live",
+        "name": "Live Camera",
+        "kind": "camera",
+        "source": int(LIVE_CAMERA_INDEX),
+        "enabled": True,
+        "fps": 0,
+        "res": "—",
+    }
+    proc = manager.ensure(camera)
+    return StreamingResponse(
+        _mjpeg_generator(proc),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/api/stream/video/{video_id}")
+async def stream_video(video_id: str):
+    """Stream a saved video file by its id from ``/api/videos``."""
+    path = _resolve_video(video_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Saved video not found.")
+    camera = {
+        "id": f"video:{video_id}",
+        "name": path.name,
+        "kind": "video",
+        "source": str(path),
+        "enabled": True,
+        "fps": 0,
+        "res": "—",
+    }
+    proc = manager.ensure(camera)
+    return StreamingResponse(
+        _mjpeg_generator(proc),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
 
 @app.get("/api/stream/{camera_id}")
 async def stream_camera(camera_id: str):
