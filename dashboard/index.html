@@ -133,12 +133,17 @@ function normalizeAlert(d) {
 }
 
 /* ---------------- Backend API helpers ---------------- */
-// When served by FastAPI the dashboard is same-origin; when opened directly via
-// file:// we fall back to localhost. This keeps both development flows working.
-const API = location.protocol === "file:" ? "http://localhost:8000" : "";
-const wsUrl = location.host
+// The FastAPI backend runs on port 8000. If the dashboard is opened directly
+// (file://) or via a static server such as VS Code Live Server (e.g. port 5500),
+// point API/WebSocket requests at the backend explicitly. When the dashboard is
+// served by FastAPI itself (same-origin, port 8000) use relative URLs.
+const BACKEND_PORT = "8000";
+const BACKEND_ORIGIN = `http://localhost:${BACKEND_PORT}`;
+const servedByBackend = location.protocol !== "file:" && location.port === BACKEND_PORT;
+const API = servedByBackend ? "" : BACKEND_ORIGIN;
+const wsUrl = servedByBackend
   ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`
-  : "ws://localhost:8000/ws";
+  : `ws://localhost:${BACKEND_PORT}/ws`;
 
 async function apiFetch(path, opts) {
   const res = await fetch(API + path, opts);
@@ -211,7 +216,9 @@ function LivePage({ cameras, zones, backendOnline, stats }) {
   const [playing, setPlaying] = useState(true);
   const [boxes, setBoxes] = useState(MOCK_BOXES);
   const cam = cameras.find(c => c.id === selected) || cameras[0];
-  const streamUrl = backendOnline && cam && cam.status === "online" && cam.stream ? API + cam.stream : null;
+  const streamUrl = backendOnline && cam && cam.status === "online"
+    ? (cam.stream ? API + cam.stream : API + `/api/stream/${cam.id}`)
+    : null;
 
   useEffect(() => {
     if (!playing || backendOnline) return;
