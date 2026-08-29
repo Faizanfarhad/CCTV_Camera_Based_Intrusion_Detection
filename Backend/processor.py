@@ -10,11 +10,13 @@ Reuses the project's existing detection pipeline (``VideoIngestion`` and
 
 Each processor runs in its own daemon thread, encodes an annotated JPEG for the
 MJPEG live-feed endpoint and invokes ``on_alert`` when a detected person enters
-a configured zone.
+a configured ROI.
 """
 
 import threading
 import time
+import colorsys
+import re
 from pathlib import Path
 
 import cv2
@@ -44,16 +46,49 @@ def point_in_polygon(pt, poly) -> bool:
 
 
 def hex_to_bgr(value: str) -> tuple[int, int, int]:
-    h = value.lstrip("#")
-    rgb = tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-    return (rgb[2], rgb[1], rgb[0])
+    raw = str(value).strip()
+
+    # The dashboard can send CSS colors such as ``hsl(140 80% 60%)``.
+    # ``colorsys`` uses HLS ordering, so pass hue, lightness, saturation.
+    hsl_match = re.fullmatch(r"hsl\((.*)\)", raw, flags=re.IGNORECASE)
+    if hsl_match:
+        try:
+            components = hsl_match.group(1).replace(",", " ").split()
+            if len(components) != 3:
+                raise ValueError
+
+            hue = float(components[0].removesuffix("deg")) % 360 / 360
+            saturation = float(components[1].removesuffix("%")) / 100
+            lightness = float(components[2].removesuffix("%")) / 100
+            if not 0 <= saturation <= 1 or not 0 <= lightness <= 1:
+                raise ValueError
+
+            rgb = colorsys.hls_to_rgb(hue, lightness, saturation)
+            return tuple(round(channel * 255) for channel in rgb)[::-1]
+        except (ValueError, TypeError):
+            print(f"Warning: Invalid HSL color '{value}'. Using default green.")
+            return (0, 255, 0)
+
+    # Clean a hex color: remove '#' if present and strip whitespace.
+    h = raw.lstrip('#')
+    if len(h) != 6:
+        print(f"Warning: Invalid hex color '{value}'. Using default green.")
+        return (0, 255, 0)
+
+    try:
+        # Convert hex to RGB, then reverse it for OpenCV's BGR format
+        rgb = tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        return rgb[::-1]
+    except ValueError:
+        print(f"Warning: Could not parse hex color '{value}'. Using default green.")
+        return (0, 255, 0)
 
 
 class StreamProcessor(threading.Thread):
     def __init__(
         self,
         camera: dict,
-        get_zones,
+        get_roi,
         on_alert,
         bg_detector,
         bg_lock: threading.Lock,
@@ -61,7 +96,7 @@ class StreamProcessor(threading.Thread):
     ):
         super().__init__(daemon=True, name=f"stream-{camera['id']}")
         self.camera = camera
-        self.get_zones = get_zones
+        self.get_roi = get_roi
         self.on_alert = on_alert
         self.bg_detector = bg_detector
         self.bg_lock = bg_lock
@@ -78,7 +113,7 @@ class StreamProcessor(threading.Thread):
         self._frame_cond = threading.Condition()
         self._seq = 0
         self._latest_jpeg = None
-        self._last_alert = {}  # zone_id -> monotonic timestamp
+        self._last_alert = 0.0
         self.fps = 0.0
 
         self.motion = foreground_model(var_threshold=20, min_threshold=200)
@@ -103,7 +138,7 @@ class StreamProcessor(threading.Thread):
         return frame
 
     @staticmethod
-    def _zone_to_pixels(pts, w, h):
+    def _roi_to_pixels(pts, w, h):
         poly = []
         for px, py in pts:
             x = max(0, min(w - 1, int(round(px / 100.0 * w))))
@@ -114,7 +149,7 @@ class StreamProcessor(threading.Thread):
     # ------------------------------------------------------------------ #
     # Drawing helpers
     # ------------------------------------------------------------------ #
-    def _draw_zone(self, frame, poly, color_hex):
+    def _draw_roi(self, frame, poly, color_hex):
         color = hex_to_bgr(color_hex)
         pts = np.array(poly, dtype=np.int32)
         overlay = frame.copy()
@@ -122,11 +157,11 @@ class StreamProcessor(threading.Thread):
         cv2.addWeighted(overlay, 0.28, frame, 0.72, 0, frame)
         cv2.polylines(frame, [pts], True, color, 2)
 
-    def _draw_status(self, frame, person_count, zone_count):
+    def _draw_status(self, frame, person_count, roi_configured):
         h = frame.shape[0]
         cv2.putText(
             frame,
-            f"Zones {zone_count} | Persons {person_count} | {self.fps:.1f} FPS",
+            f"ROI {'ON' if roi_configured else 'OFF'} | Persons {person_count} | {self.fps:.1f} FPS",
             (10, 26),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -156,10 +191,10 @@ class StreamProcessor(threading.Thread):
             return 0.0
         return float((roi > 0).sum()) / max(1, roi.size)
 
-    def _save_snapshot(self, frame, zone, conf):
+    def _save_snapshot(self, frame, roi, conf):
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         ts = int(time.time() * 1000)
-        path = SNAPSHOT_DIR / f"{self.camera['id']}_{zone['id']}_{ts}.jpg"
+        path = SNAPSHOT_DIR / f"{self.camera['id']}_{roi['id']}_{ts}.jpg"
         cv2.imwrite(str(path), frame)
         return str(path)
 
@@ -211,7 +246,7 @@ class StreamProcessor(threading.Thread):
                 )
                 motion_mask = self.motion.apply(denoised)
 
-                zones = self.get_zones() or []
+                roi = self.get_roi()
                 h, w = denoised.shape[:2]
 
                 # Refresh YOLO detections periodically; reuse them in between
@@ -224,67 +259,63 @@ class StreamProcessor(threading.Thread):
                     ]
 
                 display = denoised.copy()
-                pixel_zones = []
-                for z in zones:
-                    poly = self._zone_to_pixels(z["pts"], w, h)
+                pixel_roi = None
+                if roi:
+                    poly = self._roi_to_pixels(roi["pts"], w, h)
                     if len(poly) >= 3:
-                        pixel_zones.append((z, poly))
-                        self._draw_zone(display, poly, z["color"])
+                        pixel_roi = poly
+                        if roi.get("visible", True):
+                            self._draw_roi(display, poly, roi["color"])
 
 
-                # Draw detected persons and figure out which zone (if any) each
-                # person's centroid is inside.
+                # Draw detected persons and check whether each person's
+                # centroid is inside the ROI.
                 intrusions = []
                 for det in detections:
                     x1, y1, x2, y2 = det["bbox"]
                     cx, cy = det["centroid"]
-                    hit_zone = None
-                    for z, poly in pixel_zones:
-                        if point_in_polygon((cx, cy), poly):
-                            hit_zone = z
-                            break
-                    color = (0, 0, 255) if hit_zone else (0, 255, 0)
+                    inside_roi = pixel_roi is not None and point_in_polygon((cx, cy), pixel_roi)
+                    color = (0, 0, 255) if inside_roi else (0, 255, 0)
                     self.bg_detector.draw_border(
                         display, (int(x1), int(y1)), (int(x2), int(y2)), color=color, thickness=3
                     )
                     self.bg_detector._draw_label(
                         display, f"person {det['confidence']:.2f}", int(x1), int(y1), color=color
                     )
-                    if hit_zone:
-                        intrusions.append((det, hit_zone))
+                    if inside_roi:
+                        intrusions.append(det)
 
-                # Emit debounced alerts for person-in-zone intrusions.
+                # Emit debounced alerts for person-in-ROI intrusions.
                 now = time.time()
-                for det, z in intrusions:
-                    last = self._last_alert.get(z["id"], 0.0)
-                    if now - last >= self.alert_debounce:
-                        self._last_alert[z["id"]] = now
-                        snapshot_path = self._save_snapshot(display, z, det["confidence"])
-                        self.on_alert(
-                            self.camera,
-                            z,
-                            det["confidence"],
-                            "intrusion",
-                            snapshot_path,
-                        )
+                if roi and intrusions and now - self._last_alert >= self.alert_debounce:
+                    self._last_alert = now
+                    det = intrusions[0]
+                    snapshot_path = self._save_snapshot(display, roi, det["confidence"])
+                    self.on_alert(
+                        self.camera,
+                        roi,
+                        det["confidence"],
+                        "intrusion",
+                        snapshot_path,
+                    )
 
-                # Compute per-zone anomaly score for the on-screen summary.
-                for z, poly in pixel_zones:
-                    score = self._motion_score(motion_mask, poly)
-                    first = poly[0]
-                    label = f"{z['name']} {score:.3f}"
+                # Compute the ROI anomaly score for the on-screen summary.
+                if roi and pixel_roi and roi.get("visible", True):
+                    score = self._motion_score(motion_mask, pixel_roi)
+                    first = pixel_roi[0]
+                    label = f"ROI {score:.3f}"
                     cv2.putText(
                         display,
                         label,
                         (first[0], max(14, first[1] - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.5,
-                        hex_to_bgr(z["color"]),
+                        hex_to_bgr(roi["color"]),
                         1,
                         cv2.LINE_AA,
                     )
 
-                self._draw_status(display, len(detections), len(pixel_zones))
+                self._draw_status(display, len(detections), pixel_roi is not None)
 
                 ok, buf = cv2.imencode(
                     ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
@@ -304,8 +335,8 @@ class StreamProcessor(threading.Thread):
 class StreamManager:
     """Lazily starts/stops one :class:`StreamProcessor` per camera."""
 
-    def __init__(self, get_zones, on_alert, config):
-        self.get_zones = get_zones
+    def __init__(self, get_roi, on_alert, config):
+        self.get_roi = get_roi
         self.on_alert = on_alert
         self.config = config
         self.processors = {}
@@ -327,7 +358,7 @@ class StreamManager:
                 return proc
             proc = StreamProcessor(
                 camera,
-                self.get_zones,
+                self.get_roi,
                 self.on_alert,
                 self._get_bg_detector(),
                 self.bg_lock,
@@ -353,4 +384,3 @@ class StreamManager:
     def running_ids(self):
         with self._lock:
             return {cid for cid, p in self.processors.items() if p.is_alive()}
-

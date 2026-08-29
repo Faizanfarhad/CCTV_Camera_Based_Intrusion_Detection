@@ -39,10 +39,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 logger = logging.getLogger("sentinel.backend")
 
 
-class ZoneIn(BaseModel):
-    name: str
+class ROIIn(BaseModel):
     color: str = "#22d3ee"
     pts: list[list[float]] = Field(default_factory=list)
+
+
+class ROIVisibilityIn(BaseModel):
+    visible: bool
 
 
 class HandleIn(BaseModel):
@@ -131,7 +134,7 @@ def build_stats() -> dict:
     return {
         "cameras_online": online,
         "cameras_total": len(SOURCES),
-        "active_zones": s["active_zones"],
+        "roi_configured": s["roi_configured"],
         "detections_24h": s["detections_24h"],
         "avg_confidence": s["avg_confidence"],
     }
@@ -146,7 +149,7 @@ def maybe_send_alerts(event: dict) -> None:
     if os.getenv("ENABLE_ALERTS") != "1":
         return
     message = (
-        f"Intrusion detected: {event['cam']} / {event['zone']} "
+        f"Intrusion detected: {event['cam']} / {event['roi']} "
         f"(confidence {event['conf']:.2f})"
     )
     if os.getenv("ALERT_MAIL_TO"):
@@ -170,12 +173,12 @@ def maybe_send_alerts(event: dict) -> None:
             logger.warning("WhatsApp alert failed: %s", exc)
 
 
-def on_alert(camera: dict, zone: dict, confidence: float, event_type: str, snapshot_path: str) -> None:
+def on_alert(camera: dict, roi: dict, confidence: float, event_type: str, snapshot_path: str) -> None:
     event = store.add_event(
         camera_id=camera["id"],
         camera_name=camera["name"],
-        zone_id=zone["id"],
-        zone_name=zone["name"],
+        roi_id=roi["id"],
+        roi_name=roi["name"],
         confidence=confidence,
         event_type=event_type,
         snapshot_path=snapshot_path,
@@ -185,7 +188,7 @@ def on_alert(camera: dict, zone: dict, confidence: float, event_type: str, snaps
     maybe_send_alerts(event)
 
 
-manager = StreamManager(get_zones=store.list_zones, on_alert=on_alert, config=config_module)
+manager = StreamManager(get_roi=store.get_roi, on_alert=on_alert, config=config_module)
 
 
 @asynccontextmanager
@@ -247,26 +250,34 @@ async def get_stats():
     return build_stats()
 
 
-@app.get("/api/zones")
-async def get_zones():
-    return store.list_zones()
+@app.get("/api/roi")
+async def get_roi():
+    return store.get_roi()
 
 
-@app.post("/api/zones")
-async def post_zone(payload: ZoneIn):
+@app.put("/api/roi")
+async def put_roi(payload: ROIIn):
     if len(payload.pts) < 3:
-        raise HTTPException(status_code=422, detail="A zone needs at least 3 points.")
-    zone = store.create_zone(payload.name, payload.color, payload.pts)
-    await ws_manager.broadcast({"type": "zones", "data": store.list_zones()})
+        raise HTTPException(status_code=422, detail="An ROI needs at least 3 points.")
+    roi = store.save_roi(payload.color, payload.pts)
+    await ws_manager.broadcast({"type": "roi", "data": roi})
     await ws_manager.broadcast({"type": "stats", "data": build_stats()})
-    return zone
+    return roi
 
 
-@app.delete("/api/zones/{zone_id}")
-async def delete_zone(zone_id: str):
-    if not store.delete_zone(zone_id):
-        raise HTTPException(status_code=404, detail="Zone not found.")
-    await ws_manager.broadcast({"type": "zones", "data": store.list_zones()})
+@app.patch("/api/roi/visibility")
+async def patch_roi_visibility(payload: ROIVisibilityIn):
+    roi = store.set_roi_visibility(payload.visible)
+    if roi is None:
+        raise HTTPException(status_code=404, detail="ROI is not configured.")
+    await ws_manager.broadcast({"type": "roi", "data": roi})
+    return roi
+
+
+@app.delete("/api/roi")
+async def delete_roi():
+    store.delete_roi()
+    await ws_manager.broadcast({"type": "roi", "data": None})
     await ws_manager.broadcast({"type": "stats", "data": build_stats()})
     return {"ok": True}
 
@@ -365,13 +376,13 @@ async def stream_camera(camera_id: str):
 
 
 # --------------------------------------------------------------------------- #
-# WebSocket: real-time alerts, zones and stats
+# WebSocket: real-time alerts, ROI and stats
 # --------------------------------------------------------------------------- #
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws_manager.connect(ws)
     try:
-        await ws.send_text(json.dumps({"type": "zones", "data": store.list_zones()}))
+        await ws.send_text(json.dumps({"type": "roi", "data": store.get_roi()}))
         await ws.send_text(json.dumps({"type": "stats", "data": build_stats()}))
         while True:
             message = await ws.receive_text()
@@ -381,4 +392,3 @@ async def websocket_endpoint(ws: WebSocket):
         ws_manager.disconnect(ws)
     except Exception:
         ws_manager.disconnect(ws)
-

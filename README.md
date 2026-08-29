@@ -1,14 +1,14 @@
 # Sentinel — AI-Powered CCTV Intrusion Detection System(WIP)
 
 A real-time CCTV intrusion detection system that watches live or recorded camera
-feeds, detects when a **person** enters a configured **restricted zone**, logs the
+feeds, detects when a **person** enters a configured **region of interest (ROI)**, logs the
 event with a timestamped snapshot, sends an alert, and exposes everything through a
-**React web dashboard** (live feed, alert history, and zone configuration).
+**React web dashboard** (live feed, alert history, and ROI configuration).
 
 The project is split into three layers:
 
 1. **Video ingestion** — reads camera/video frames and cleans them up.
-2. **Detection engine** — motion detection, YOLOv8 person detection, ROI/zone checks.
+2. **Detection engine** — motion detection, YOLOv8 person detection, and ROI checks.
 3. **Web backend + dashboard** — a FastAPI service that runs the pipeline headlessly
    and a React dashboard that visualizes it in real time.
 
@@ -27,7 +27,7 @@ The project is split into three layers:
 - [Dashboard](#dashboard)
 - [REST API Reference](#rest-api-reference)
 - [WebSocket Events](#websocket-events)
-- [Zone Coordinate System](#zone-coordinate-system)
+- [ROI Coordinate System](#roi-coordinate-system)
 - [Alert Integrations](#alert-integrations)
 - [Configuration](#configuration)
 - [Validation / Testing](#validation--testing)
@@ -42,13 +42,13 @@ The project is split into three layers:
 - **Frame preprocessing** (resize + selectable denoising).
 - **Motion detection** with OpenCV MOG2 background subtraction.
 - **Person-only detection** with Ultralytics YOLOv8 (COCO `person` class).
-- **Configurable restricted zones** — draw polygon ROIs from the dashboard.
+- **Configurable ROI** — draw one polygon ROI from the dashboard and show/hide its overlay.
 - **Point-in-polygon intrusion check** on each detected person's centroid.
-- **Anomaly scoring** from the fraction of moving pixels inside each zone.
-- **Debounced alerts** (default: one alert per zone every 30 seconds).
+- **Anomaly scoring** from the fraction of moving pixels inside the ROI.
+- **Debounced alerts** (default: one alert per ROI every 30 seconds).
 - **Evidence capture** — annotated snapshot saved for every alert.
-- **Persistent history** — SQLite database of zones and alert events.
-- **Real-time dashboard** — live MJPEG feed, live alert feed, zone editor.
+- **Persistent history** — SQLite database of ROI and alert events.
+- **Real-time dashboard** — live MJPEG feed, live alert feed, ROI editor.
 - **Optional integrations** — email (Resend) and WhatsApp (UltraMsg).
 
 ---
@@ -61,25 +61,25 @@ flowchart TD
     B --> C["Resize + Denoise<br/>denoise_frame"]
     C --> D["Motion Detection<br/>MOG2 background subtraction"]
     D --> E["Person Detection<br/>YOLOv8 person class"]
-    E --> F["Zone / ROI Check<br/>centroid point-in-polygon"]
-    F --> G{"Person inside a restricted zone?"}
+    E --> F["ROI Check<br/>centroid point-in-polygon"]
+    F --> G{"Person inside the ROI?"}
     G -- "No" --> B
     G -- "Yes" --> H["Debounce + Log Event"]
     H --> I["Save Annotated Snapshot"]
     H --> J["Alert Module<br/>Email / WhatsApp"]
     H --> K["SQLite Event History"]
     H --> L["WebSocket Broadcast"]
-    L --> M["React Dashboard<br/>Live Feed / Alerts / Zones"]
+    L --> M["React Dashboard<br/>Live Feed / Alerts / ROI"]
 ```
 
 ### Data-flow (FastAPI backend)
 
 ```mermaid
 flowchart LR
-    UI["React Dashboard"] -->|"GET/POST zones, alerts, stats"| API["FastAPI REST"]
+    UI["React Dashboard"] -->|"GET/PUT ROI, alerts, stats"| API["FastAPI REST"]
     UI -->|"MJPEG live view"| STREAM["/api/stream/id"]
     UI <-->|"WebSocket /ws"| WS["WebSocket Manager"]
-    API --> DB["SQLite zones + events"]
+    API --> DB["SQLite ROI + events"]
     STREAM --> PROC["StreamProcessor thread"]
     PROC --> DB
     PROC --> WS
@@ -95,7 +95,7 @@ flowchart LR
                                       Detection Engine
                                    - Motion Detection (MOG2)
                                    - Object Detection (YOLOv8 person)
-                                   - ROI / Zone Check
+                                   - ROI Check
                                               |
                      +------------------------+------------------------+
                      |                        |                        |
@@ -105,7 +105,7 @@ flowchart LR
                                    Web Dashboard (React)
                                  - Live feed view
                                  - Alerts & history
-                                 - Zone configuration
+                                 - ROI configuration
 ```
 
 ---
@@ -121,13 +121,13 @@ For every captured frame, the backend processor:
    motion mask.
 5. **Person detection** — run YOLOv8 filtered to the `person` class every
    `DETECT_EVERY` frames (reusing the last result in between for smooth streaming).
-6. **Zone mapping** — convert each dashboard zone from normalized `100×60`
+6. **ROI mapping** — convert the dashboard ROI from normalized `100×60`
    coordinates into pixel coordinates for the current frame.
 7. **Intrusion check** — for each detected person, test whether its bounding-box
-   centroid is inside any zone polygon.
-8. **Anomaly scoring** — compute the fraction of moving pixels inside each zone
+   centroid is inside the ROI polygon.
+8. **Anomaly scoring** — compute the fraction of moving pixels inside the ROI
    (reusing `extract_roi` and the MOG2 mask).
-9. **Alert** — if a person is inside a zone and the per-zone debounce window has
+9. **Alert** — if a person is inside the ROI and the debounce window has
    passed, log the event, save an annotated JPEG snapshot, broadcast it over
    WebSocket, and optionally send email/WhatsApp.
 10. **Stream** — encode the annotated frame as JPEG and publish it to the MJPEG
@@ -145,8 +145,8 @@ For every captured frame, the backend processor:
 │   └── whatsapp_alert.py        #   UltraMsg WhatsApp alert
 ├── Backend/                     # FastAPI service (connects pipeline to dashboard)
 │   ├── __init__.py
-│   ├── config.py                #   sources, zones, detection/stream tuning
-│   ├── store.py                 #   SQLite persistence (zones + events)
+│   ├── config.py                #   sources, ROI, detection/stream tuning
+│   ├── store.py                 #   SQLite persistence (ROI + events)
 │   ├── processor.py             #   headless per-camera detection thread
 │   └── main.py                  #   REST + WebSocket + MJPEG endpoints
 ├── DetectionEngine/             # Core computer-vision pipeline
@@ -186,7 +186,7 @@ For every captured frame, the backend processor:
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | `1.2.3` | Loads `.env` API keys. |
 | [resend](https://resend.com/) | `2.42.0` | Email alert sending. |
 | [requests](https://requests.readthedocs.io/) | `2.34.2` | HTTP calls to the WhatsApp (UltraMsg) API. |
-| `sqlite3` (stdlib) | built-in | Persistent storage of zones and alert events. |
+| `sqlite3` (stdlib) | built-in | Persistent storage of the ROI and alert events. |
 | `threading` (stdlib) | built-in | Per-camera detection threads, locks, and WebSocket fan-out. |
 
 ### Frontend (loaded via CDN, no build step)
@@ -256,7 +256,8 @@ Then open the dashboard:
 On startup the backend:
 
 1. Creates/opens `data/sentinel.db`.
-2. Seeds the two default zones if the `zones` table is empty.
+2. Creates the default ROI if no ROI is configured, and migrates an older
+   multi-zone database by keeping its first polygon.
 3. Registers the REST + WebSocket + MJPEG routes.
 
 When you open the live view, a `StreamProcessor` thread starts for the selected
@@ -274,9 +275,9 @@ Three pages are available in the sidebar:
 
 | Page | What it does |
 |---|---|
-| **Live Feed** | Streams a camera with zone/detection overlays. Includes a **Live Camera / Saved Video** toggle: **Live Camera** streams the webcam (`/api/stream/live`), **Saved Video** lets you pick any recorded clip from `saved_videos/` or `testVideo/`. Also shows camera status, active zones, 24h detections, and average confidence. |
+| **Live Feed** | Streams a camera with ROI/detection overlays. Includes a **Live Camera / Saved Video** toggle: **Live Camera** streams the webcam (`/api/stream/live`), **Saved Video** lets you pick any recorded clip from `saved_videos/` or `testVideo/`. Also shows camera status, ROI status, 24h detections, and average confidence. |
 | **Alerts & History** | Live alert ticker + searchable/filterable history, with a button to mark each alert handled. |
-| **Zone Config** | Draw polygon zones on a canvas, save them, and delete existing zones. |
+| **ROI Config** | Draw one polygon ROI on a canvas, save it, or clear it. |
 
 The dashboard automatically switches between **live mode** (backend reachable)
 and **mock mode** (backend offline), so the UI still renders standalone.
@@ -292,10 +293,11 @@ Base URL: `http://localhost:8000`
 | `GET` | `/` | Serves the dashboard HTML. |
 | `GET` | `/api/health` | Returns `{"status":"ok"}`. |
 | `GET` | `/api/cameras` | Camera list with `status`, `fps`, `res`, `streaming`, and `stream` URL. |
-| `GET` | `/api/stats` | `cameras_online`, `cameras_total`, `active_zones`, `detections_24h`, `avg_confidence`. |
-| `GET` | `/api/zones` | List all configured zones. |
-| `POST` | `/api/zones` | Create a zone. Body: `{"name", "color", "pts": [[x,y], ...]}`. |
-| `DELETE` | `/api/zones/{zone_id}` | Delete a zone. |
+| `GET` | `/api/stats` | `cameras_online`, `cameras_total`, `roi_configured`, `detections_24h`, `avg_confidence`. |
+| `GET` | `/api/roi` | Get the configured ROI, or `null`. |
+| `PUT` | `/api/roi` | Replace the ROI. Body: `{"color", "pts": [[x,y], ...]}`. |
+| `PATCH` | `/api/roi/visibility` | Show or hide the ROI overlay. Body: `{"visible": true}`. Detection remains active when hidden. |
+| `DELETE` | `/api/roi` | Clear the ROI. |
 | `GET` | `/api/alerts` | Alert history. Optional query params: `limit`, `type`, `q`. |
 | `PATCH` | `/api/alerts/{event_id}` | Mark an alert handled. Body: `{"handled": true}`. |
 | `GET` | `/api/videos` | List saved/recorded videos available for playback. |
@@ -311,20 +313,20 @@ Interactive docs are available at **http://localhost:8000/docs** (Swagger UI).
 
 Endpoint: `ws://localhost:8000/ws`
 
-On connect, the server immediately sends the current `zones` and `stats`. After
+On connect, the server immediately sends the current `roi` and `stats`. After
 that it pushes events as they happen:
 
 | Type | Payload | Trigger |
 |---|---|---|
-| `alert` | `{ "data": { id, cam, zone, time, conf, type, handled, ... } }` | New intrusion event. |
-| `zones` | `{ "data": [zone, ...] }` | Zone created or deleted. |
-| `stats` | `{ "data": { ...stats } }` | Stats changed (after alert/zone change). |
+| `alert` | `{ "data": { id, cam, roi, time, conf, type, handled, ... } }` | New intrusion event. |
+| `roi` | `{ "data": { id, name, color, visible, pts } }` or `null` | ROI saved, visibility changed, or cleared. |
+| `stats` | `{ "data": { ...stats } }` | Stats changed (after alert/ROI change). |
 
 ---
 
-## Zone Coordinate System
+## ROI Coordinate System
 
-The dashboard's zone editor uses a normalized `100 × 60` coordinate space
+The dashboard's ROI editor uses a normalized `100 × 60` coordinate space
 (matching the SVG `viewBox="0 0 100 60"`). The backend stores those same
 normalized points and converts them to pixels at detection time:
 
@@ -333,7 +335,7 @@ pixel_x = round(pt_x / 100 * frame_width)
 pixel_y = round(pt_y / 60  * frame_height)
 ```
 
-This keeps zones resolution-independent: the same zone definition works for
+This keeps the ROI resolution-independent: the same ROI definition works for
 different camera/video resolutions.
 
 
@@ -408,14 +410,14 @@ Each camera entry:
 | `PROCESS_WIDTH` | `960` | Frames are downscaled to this width before inference. |
 | `DETECT_EVERY` | `3` | Run YOLO every N frames (motion runs every frame). |
 | `PERSON_CONF_THRESHOLD` | `0.35` | Minimum YOLO confidence for a valid person. |
-| `ANOMALY_THRESHOLD` | `0.02` | Motion fraction inside a zone that counts as anomalous. |
-| `ALERT_DEBOUNCE_SECONDS` | `30` | Minimum seconds between alerts for the same zone. |
+| `ANOMALY_THRESHOLD` | `0.02` | Motion fraction inside the ROI that counts as anomalous. |
+| `ALERT_DEBOUNCE_SECONDS` | `30` | Minimum seconds between ROI alerts. |
 | `STREAM_FPS` | `12` | Target processing/streaming rate. |
 | `JPEG_QUALITY` | `70` | MJPEG frame quality. |
 
-### Default zones (`DEFAULT_ZONES`)
+### Default ROI (`DEFAULT_ROI`)
 
-Seeded into SQLite on first run. You can edit them in the dashboard instead.
+Seeded into SQLite on first run. You can edit it in the dashboard instead.
 
 ---
 
@@ -425,9 +427,9 @@ Verified while developing the backend:
 
 - `python3 -m py_compile Backend/*.py` — all modules compile.
 - Booted Uvicorn and smoke-tested `/`, `/api/health`, `/api/cameras`,
-  `/api/zones`, `/api/stats`, and `/api/alerts`.
+  `/api/roi`, `/api/stats`, and `/api/alerts`.
 - Confirmed `/api/stream/cam-01` returns valid `image/jpeg` MJPEG frames.
-- Confirmed zone create/delete and alert `PATCH` round-trips.
+- Confirmed ROI save/clear and alert `PATCH` round-trips.
 - Confirmed the dashboard renders with **"Backend connected"** when served by
   FastAPI, and **"Backend offline"** (mock mode) when the backend is stopped.
 
@@ -476,4 +478,3 @@ python3 VideoIngestion/video_input.py
 - TensorRT / ONNX export for faster edge inference.
 - Precompiled React build instead of the in-browser Babel transformer.
 - Docker Compose packaging.
-

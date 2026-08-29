@@ -1,4 +1,4 @@
-"""SQLite persistence for zones and alert events.
+"""SQLite persistence for one ROI and alert events.
 
 SQLite is used directly (no ORM) so the backend has no extra dependencies beyond
 the standard library. Every operation opens a short-lived connection protected
@@ -9,10 +9,9 @@ threads design used here.
 import json
 import sqlite3
 import threading
-import uuid
 from datetime import datetime, timedelta
 
-from Backend.config import DB_PATH, DEFAULT_ZONES
+from Backend.config import DB_PATH, DEFAULT_ROI
 
 _lock = threading.RLock()
 
@@ -27,24 +26,33 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _lock:
         conn = _connect()
+        roi_table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roi'"
+        ).fetchone() is not None
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS zones (
+            CREATE TABLE IF NOT EXISTS roi (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 color TEXT NOT NULL,
+                visible INTEGER NOT NULL DEFAULT 1,
                 points TEXT NOT NULL
             )
             """
         )
+        roi_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(roi)").fetchall()
+        }
+        if "visible" not in roi_columns:
+            conn.execute("ALTER TABLE roi ADD COLUMN visible INTEGER NOT NULL DEFAULT 1")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 camera_id TEXT NOT NULL,
                 camera_name TEXT NOT NULL,
-                zone_id TEXT,
-                zone_name TEXT,
+                roi_id TEXT,
+                roi_name TEXT,
                 timestamp TEXT NOT NULL,
                 confidence REAL NOT NULL,
                 type TEXT NOT NULL,
@@ -53,65 +61,95 @@ def init_db() -> None:
             )
             """
         )
+        event_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "zone_id" in event_columns:
+            conn.execute("ALTER TABLE events RENAME COLUMN zone_id TO roi_id")
+        if "zone_name" in event_columns:
+            conn.execute("ALTER TABLE events RENAME COLUMN zone_name TO roi_name")
         conn.commit()
 
-        # Seed the default zones the first time the database is created.
-        count = conn.execute("SELECT COUNT(*) FROM zones").fetchone()[0]
-        if count == 0:
-            for z in DEFAULT_ZONES:
-                conn.execute(
-                    "INSERT INTO zones (id, name, color, points) VALUES (?, ?, ?, ?)",
-                    (z["id"], z["name"], z["color"], json.dumps(z["pts"])),
-                )
-            conn.commit()
+        # Migrate the old multi-zone table by keeping its first polygon as the
+        # single ROI. The legacy table is no longer used by the application.
+        legacy_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'zones'"
+        ).fetchone() is not None
+        roi = conn.execute("SELECT * FROM roi WHERE id = 'roi'").fetchone()
+        if legacy_exists:
+            if roi is None:
+                legacy = conn.execute("SELECT * FROM zones ORDER BY rowid LIMIT 1").fetchone()
+                if legacy is not None:
+                    conn.execute(
+                        "INSERT INTO roi (id, name, color, visible, points) VALUES (?, ?, ?, 1, ?)",
+                        ("roi", "ROI", legacy["color"], legacy["points"]),
+                    )
+            conn.execute("DROP TABLE zones")
+        elif roi is None and not roi_table_exists:
+            conn.execute(
+                "INSERT INTO roi (id, name, color, visible, points) VALUES (?, ?, ?, ?, ?)",
+                (DEFAULT_ROI["id"], DEFAULT_ROI["name"], DEFAULT_ROI["color"], int(DEFAULT_ROI["visible"]), json.dumps(DEFAULT_ROI["pts"])),
+            )
+        conn.commit()
         conn.close()
 
 
 # --------------------------------------------------------------------------- #
-# Zones
+# ROI
 # --------------------------------------------------------------------------- #
-def _zone_from_row(row) -> dict:
+def _roi_from_row(row) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
         "color": row["color"],
+        "visible": bool(row["visible"]),
         "pts": json.loads(row["points"]),
     }
 
 
-def list_zones() -> list[dict]:
+def get_roi() -> dict | None:
     with _lock:
         conn = _connect()
-        rows = conn.execute("SELECT * FROM zones ORDER BY rowid").fetchall()
+        row = conn.execute("SELECT * FROM roi WHERE id = 'roi'").fetchone()
         conn.close()
-    return [_zone_from_row(r) for r in rows]
+    return _roi_from_row(row) if row else None
 
 
-def get_zone(zone_id: str) -> dict | None:
+def save_roi(color: str, pts: list) -> dict:
     with _lock:
         conn = _connect()
-        row = conn.execute("SELECT * FROM zones WHERE id = ?", (zone_id,)).fetchone()
-        conn.close()
-    return _zone_from_row(row) if row else None
-
-
-def create_zone(name: str, color: str, pts: list) -> dict:
-    zone_id = f"z-{uuid.uuid4().hex[:8]}"
-    with _lock:
-        conn = _connect()
+        existing = conn.execute("SELECT visible FROM roi WHERE id = 'roi'").fetchone()
+        visible = bool(existing["visible"]) if existing else True
+        roi = {"id": "roi", "name": "ROI", "color": color, "visible": visible, "pts": pts}
         conn.execute(
-            "INSERT INTO zones (id, name, color, points) VALUES (?, ?, ?, ?)",
-            (zone_id, name, color, json.dumps(pts)),
+            """
+            INSERT INTO roi (id, name, color, visible, points) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                color = excluded.color,
+                points = excluded.points
+            """,
+            (roi["id"], roi["name"], roi["color"], int(roi["visible"]), json.dumps(roi["pts"])),
         )
         conn.commit()
         conn.close()
-    return {"id": zone_id, "name": name, "color": color, "pts": pts}
+    return roi
 
 
-def delete_zone(zone_id: str) -> bool:
+def set_roi_visibility(visible: bool) -> dict | None:
     with _lock:
         conn = _connect()
-        cur = conn.execute("DELETE FROM zones WHERE id = ?", (zone_id,))
+        conn.execute("UPDATE roi SET visible = ? WHERE id = 'roi'", (int(visible),))
+        row = conn.execute("SELECT * FROM roi WHERE id = 'roi'").fetchone()
+        conn.commit()
+        conn.close()
+    return _roi_from_row(row) if row else None
+
+
+def delete_roi() -> bool:
+    with _lock:
+        conn = _connect()
+        cur = conn.execute("DELETE FROM roi WHERE id = 'roi'")
         conn.commit()
         deleted = cur.rowcount > 0
         conn.close()
@@ -131,7 +169,7 @@ def _event_from_row(row) -> dict:
     return {
         "id": row["id"],
         "cam": row["camera_name"],
-        "zone": row["zone_name"],
+        "roi": row["roi_name"] or "ROI",
         "time": time_str,
         "timestamp": ts,
         "conf": row["confidence"],
@@ -139,15 +177,15 @@ def _event_from_row(row) -> dict:
         "handled": bool(row["handled"]),
         "snapshot_path": row["snapshot_path"],
         "camera_id": row["camera_id"],
-        "zone_id": row["zone_id"],
+        "roi_id": row["roi_id"],
     }
 
 
 def add_event(
     camera_id: str,
     camera_name: str,
-    zone_id: str,
-    zone_name: str,
+    roi_id: str,
+    roi_name: str,
     confidence: float,
     event_type: str = "intrusion",
     snapshot_path: str | None = None,
@@ -158,11 +196,11 @@ def add_event(
         cur = conn.execute(
             """
             INSERT INTO events
-                (camera_id, camera_name, zone_id, zone_name, timestamp,
+                (camera_id, camera_name, roi_id, roi_name, timestamp,
                  confidence, type, handled, snapshot_path)
             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
-            (camera_id, camera_name, zone_id, zone_name, ts, confidence, event_type, snapshot_path),
+            (camera_id, camera_name, roi_id, roi_name, ts, confidence, event_type, snapshot_path),
         )
         conn.commit()
         event_id = cur.lastrowid
@@ -187,7 +225,7 @@ def list_events(limit: int = 200, event_type: str | None = None, q: str | None =
         clauses.append("type = ?")
         params.append(event_type)
     if q:
-        clauses.append("(camera_name LIKE ? OR zone_name LIKE ?)")
+        clauses.append("(camera_name LIKE ? OR roi_name LIKE ?)")
         like = f"%{q}%"
         params.extend([like, like])
 
@@ -216,7 +254,7 @@ def mark_handled(event_id: int, handled: bool = True) -> bool:
 def stats() -> dict:
     with _lock:
         conn = _connect()
-        active_zones = conn.execute("SELECT COUNT(*) FROM zones").fetchone()[0]
+        active_roi = conn.execute("SELECT COUNT(*) FROM roi WHERE id = 'roi'").fetchone()[0]
         since = (datetime.now() - timedelta(hours=24)).isoformat()
         row = conn.execute(
             "SELECT COUNT(*), AVG(confidence) FROM events WHERE timestamp >= ?",
@@ -226,8 +264,7 @@ def stats() -> dict:
     detections = row[0] or 0
     avg_conf = round(row[1] or 0.0, 3)
     return {
-        "active_zones": active_zones,
+        "roi_configured": bool(active_roi),
         "detections_24h": detections,
         "avg_confidence": avg_conf,
     }
-
