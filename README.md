@@ -488,6 +488,11 @@ python3 VideoIngestion/video_input.py
   is `"enabled": true` in `Backend/config.py`. Render cannot access a camera
   attached to your personal computer.
 
+- **Local integrated camera is unavailable**
+  Open the dashboard at `http://localhost:8000`, not `http://0.0.0.0:8000`.
+  Browsers block camera access on the `0.0.0.0` alias. The dashboard redirects
+  that address to `localhost` automatically.
+
 - **YOLO/`ultralytics` import error**
   Install dependencies with `pip install -r requirements.txt` and ensure
   the Render service can download `yolov8n.pt`. Check `GET /api/detector` to

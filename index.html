@@ -69,6 +69,14 @@
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react">
+// Browsers allow camera access on localhost but not on the 0.0.0.0 alias.
+// Redirect local users so the integrated-camera mode works without HTTPS.
+if (location.hostname === "0.0.0.0") {
+  const localhostUrl = new URL(location.href);
+  localhostUrl.hostname = "localhost";
+  location.replace(localhostUrl.toString());
+}
+
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 /* ---------------- Icons (inline SVG) ---------------- */
@@ -196,7 +204,7 @@ function BrowserLiveFeed({ playing, backendOnline }) {
     const start = async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error("This browser does not allow integrated-camera access.");
+          throw new Error("Open the dashboard at http://localhost:8000 to allow camera access.");
         }
         mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         if (cancelled) return;
