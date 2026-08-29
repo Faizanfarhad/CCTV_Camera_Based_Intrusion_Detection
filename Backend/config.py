@@ -18,6 +18,10 @@ SNAPSHOT_DIR = BASE_DIR / "saved_videos" / "snapshots"
 # Dashboard entry point served by FastAPI at "/".
 DASHBOARD_PATH = BASE_DIR / "index.html"
 
+# YOLO weights. Ultralytics downloads ``yolov8n.pt`` on first use when it is
+# not already present. Set YOLO_MODEL_PATH on Render to a mounted/custom model.
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
+
 # Single camera source. ``kind`` is either "video" (path relative to BASE_DIR)
 # or "camera" (OpenCV device index).
 CAMERA_SOURCE = os.getenv(

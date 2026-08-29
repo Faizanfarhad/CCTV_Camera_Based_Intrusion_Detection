@@ -292,6 +292,7 @@ Base URL: `http://localhost:8000`
 |---|---|---|
 | `GET` | `/` | Serves the dashboard HTML. |
 | `GET` | `/api/health` | Returns `{"status":"ok"}`. |
+| `GET` | `/api/detector` | Loads YOLO and runs a test inference, reporting YOLO/MOG2 readiness. Returns `503` with the loading error when YOLO is unavailable. |
 | `GET` | `/api/cameras` | The single configured camera with `status`, `fps`, `res`, `streaming`, and `stream` URL. |
 | `GET` | `/api/stats` | `cameras_online`, `cameras_total`, `roi_configured`, `detections_24h`, `avg_confidence`. |
 | `GET` | `/api/roi` | Get the configured ROI, or `null`. |
@@ -440,6 +441,7 @@ host when used directly.
 | `ALERT_CONFIDENCE_THRESHOLD` | `0.70` | Email/WhatsApp notifications require confidence strictly greater than 70%. |
 | `STREAM_FPS` | `12` | Target processing/streaming rate. |
 | `JPEG_QUALITY` | `70` | MJPEG frame quality. |
+| `YOLO_MODEL_PATH` | `yolov8n.pt` | YOLO weights path/name. Ultralytics downloads the default weights on first use if they are not present. |
 
 ### Default ROI (`DEFAULT_ROI`)
 
@@ -488,7 +490,8 @@ python3 VideoIngestion/video_input.py
 
 - **YOLO/`ultralytics` import error**
   Install dependencies with `pip install -r requirements.txt` and ensure
-  `yolov8n.pt` is in the project root.
+  the Render service can download `yolov8n.pt`. Check `GET /api/detector` to
+  see the exact model-loading error.
 
 - **Email/WhatsApp not arriving**
   Alerts are disabled unless `ENABLE_ALERTS=1`. Also verify the `.env` keys and

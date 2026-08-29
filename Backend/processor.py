@@ -120,6 +120,7 @@ class StreamProcessor(threading.Thread):
         self._last_alert = 0.0
         self.fps = 0.0
         self._detections = []
+        self._logged_inference = False
 
         self.motion = foreground_model(var_threshold=20, min_threshold=200)
 
@@ -236,6 +237,9 @@ class StreamProcessor(threading.Thread):
         if frame_idx % self.detect_every == 0:
             with self.bg_lock:
                 self._detections, _ = self.bg_detector(denoised)
+            if not self._logged_inference:
+                logger.info("YOLO inference is running for %s", self.camera["name"])
+                self._logged_inference = True
             self._detections = [
                 d for d in self._detections if d["confidence"] >= self.person_conf
             ]
@@ -366,9 +370,18 @@ class StreamManager:
         if self.bg_detector is None:
             from DetectionEngine.background_model import background_model
 
-            logger.info("Loading YOLO person detector")
-            self.bg_detector = background_model()
-            logger.info("YOLO person detector ready")
+            model_path = getattr(self.config, "YOLO_MODEL_PATH", "yolov8n.pt")
+            logger.info("Loading YOLO person detector from %s", model_path)
+            try:
+                self.bg_detector = background_model(model_path=model_path)
+            except Exception:
+                logger.exception(
+                    "YOLO model could not be loaded from %s. "
+                    "Check YOLO_MODEL_PATH and model download access.",
+                    model_path,
+                )
+                raise
+            logger.info("YOLO person detector ready from %s", model_path)
         return self.bg_detector
 
     def create_processor(self, camera):

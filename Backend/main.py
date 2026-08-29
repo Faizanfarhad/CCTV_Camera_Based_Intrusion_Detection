@@ -309,6 +309,32 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/detector")
+async def detector_status():
+    """Load the configured YOLO detector and report whether it is ready."""
+    try:
+        detector = await asyncio.to_thread(manager._get_bg_detector)
+        # Execute one real inference so this endpoint verifies model execution,
+        # not just that the weights file/import exists.
+        test_frame = np.zeros((64, 64, 3), dtype=np.uint8)
+
+        def run_test_inference():
+            with manager.bg_lock:
+                return detector(test_frame)
+
+        detections, _ = await asyncio.to_thread(run_test_inference)
+    except Exception as exc:  # noqa: BLE001 - expose a useful deployment status
+        raise HTTPException(status_code=503, detail=f"YOLO detector unavailable: {exc}") from exc
+    return {
+        "status": "ready",
+        "model": getattr(config_module, "YOLO_MODEL_PATH", "yolov8n.pt"),
+        "foreground_model": "MOG2",
+        "person_class": 0,
+        "inference": "ok",
+        "test_detections": len(detections),
+    }
+
+
 @app.get("/api/cameras")
 async def cameras():
     running = manager.running_ids()
