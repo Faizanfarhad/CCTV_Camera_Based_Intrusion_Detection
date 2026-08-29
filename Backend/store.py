@@ -15,6 +15,12 @@ from Backend.config import DB_PATH, DEFAULT_ROI
 
 _lock = threading.RLock()
 
+DEFAULT_RETENTION = {
+    "enabled": False,
+    "amount": 7,
+    "unit": "days",
+}
+
 
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +66,18 @@ def init_db() -> None:
                 snapshot_path TEXT
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            ("alert_retention", json.dumps(DEFAULT_RETENTION)),
         )
         event_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()
@@ -249,6 +267,68 @@ def mark_handled(event_id: int, handled: bool = True) -> bool:
         updated = cur.rowcount > 0
         conn.close()
     return updated
+
+
+def _normalize_retention(value: dict | None) -> dict:
+    value = value or {}
+    unit = value.get("unit", DEFAULT_RETENTION["unit"])
+    if unit not in {"hours", "days"}:
+        unit = DEFAULT_RETENTION["unit"]
+    try:
+        amount = int(value.get("amount", DEFAULT_RETENTION["amount"]))
+    except (TypeError, ValueError):
+        amount = DEFAULT_RETENTION["amount"]
+    return {
+        "enabled": bool(value.get("enabled", DEFAULT_RETENTION["enabled"])),
+        "amount": max(1, min(amount, 3650)),
+        "unit": unit,
+    }
+
+
+def get_retention() -> dict:
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'alert_retention'"
+        ).fetchone()
+        conn.close()
+    try:
+        value = json.loads(row["value"]) if row else DEFAULT_RETENTION
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = DEFAULT_RETENTION
+    return _normalize_retention(value)
+
+
+def save_retention(enabled: bool, amount: int, unit: str) -> dict:
+    retention = _normalize_retention(
+        {"enabled": enabled, "amount": amount, "unit": unit}
+    )
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("alert_retention", json.dumps(retention)),
+        )
+        conn.commit()
+        conn.close()
+    return retention
+
+
+def purge_expired_events() -> int:
+    """Delete alert history older than the configured retention period."""
+    retention = get_retention()
+    if not retention["enabled"]:
+        return 0
+
+    hours = retention["amount"] if retention["unit"] == "hours" else retention["amount"] * 24
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    with _lock:
+        conn = _connect()
+        cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+        conn.commit()
+        deleted = cur.rowcount
+        conn.close()
+    return deleted
 
 
 def stats() -> dict:

@@ -91,17 +91,14 @@ const I = {
 /* ---------------- Mock data + WS stub ---------------- */
 const CAMERAS = [
   { id: "cam-01", name: "Perimeter Gate", status: "online", fps: 14, res: "1080p" },
-  { id: "cam-02", name: "Server Room",   status: "online", fps: 12, res: "720p"  },
-  { id: "cam-03", name: "Warehouse Bay", status: "online", fps: 15, res: "1080p" },
-  { id: "cam-04", name: "Parking Lot",   status: "offline", fps: 0,  res: "—"    },
 ];
 
 const INITIAL_ALERTS = [
-  { id: 1, cam: "Server Room",   roi: "ROI", time: "14:32:05", conf: 0.96, type: "intrusion", handled: false },
+  { id: 1, cam: "Perimeter Gate", roi: "ROI", time: "14:32:05", conf: 0.96, type: "intrusion", handled: false },
   { id: 2, cam: "Perimeter Gate", roi: "ROI", time: "14:18:44", conf: 0.91, type: "intrusion", handled: false },
-  { id: 3, cam: "Warehouse Bay", roi: "ROI", time: "13:57:12", conf: 0.88, type: "loitering", handled: true  },
-  { id: 4, cam: "Server Room",   roi: "ROI", time: "12:41:09", conf: 0.94, type: "intrusion", handled: true  },
-  { id: 5, cam: "Parking Lot",   roi: "ROI", time: "11:03:27", conf: 0.79, type: "intrusion", handled: true  },
+  { id: 3, cam: "Perimeter Gate", roi: "ROI", time: "13:57:12", conf: 0.88, type: "loitering", handled: true  },
+  { id: 4, cam: "Perimeter Gate", roi: "ROI", time: "12:41:09", conf: 0.94, type: "intrusion", handled: true  },
+  { id: 5, cam: "Perimeter Gate", roi: "ROI", time: "11:03:27", conf: 0.79, type: "intrusion", handled: true  },
 ];
 
 const ROI = {
@@ -212,13 +209,12 @@ function LiveFeed({ cam, boxes, roi, streamUrl }) {
 
 /* ---------------- Pages ---------------- */
 function LivePage({ cameras, roi, backendOnline, stats }) {
-  const [selected, setSelected] = useState("cam-01");
   const [playing, setPlaying] = useState(true);
   const [boxes, setBoxes] = useState(MOCK_BOXES);
   const [feedMode, setFeedMode] = useState("camera"); // "camera" | "live" | "video"
   const [savedVideos, setSavedVideos] = useState([]);
   const [selectedVideoId, setSelectedVideoId] = useState("");
-  const cam = cameras.find(c => c.id === selected) || cameras[0];
+  const cam = cameras[0] || CAMERAS[0];
 
   // Load the list of saved/recorded videos available for playback.
   useEffect(() => {
@@ -266,7 +262,7 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
       {/* stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "Cameras Online", val: `${online}/${cameras.length}`, icon: I.camera, tone: "text-cyan-300" },
+          { label: "Camera Status", val: online ? "ON" : "OFF", icon: I.camera, tone: "text-cyan-300" },
           { label: "ROI Status", val: stats ? (stats.roi_configured ? "ON" : "OFF") : (roi ? "ON" : "OFF"), icon: I.roi, tone: "text-violet-300" },
           { label: "Detections (24h)", val: stats?.detections_24h ?? "142", icon: I.alert, tone: "text-rose-300" },
           { label: "Avg Confidence", val: stats ? `${(stats.avg_confidence*100).toFixed(1)}%` : "92.4%", icon: I.shield, tone: "text-emerald-300" },
@@ -281,9 +277,9 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
         ))}
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      <div className="grid gap-4">
         {/* main feed */}
-        <div className="lg:col-span-2 glass rounded-2xl p-4">
+        <div className="glass rounded-2xl p-4">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2 text-sm font-semibold">
               <I.camera className="w-4 h-4 text-cyan-300" /> {displayCam ? displayCam.name : "Live Feed"}
@@ -316,40 +312,44 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
           </div>
         </div>
 
-        {/* camera list */}
-        <div className="glass rounded-2xl p-4">
-          <div className="text-sm font-semibold mb-3 flex items-center gap-2">
-            <I.grid className="w-4 h-4 text-cyan-300" /> Cameras
-          </div>
-          <div className="space-y-2">
-            {cameras.map(c => (
-              <button key={c.id} onClick={() => { setSelected(c.id); setFeedMode("camera"); }}
-                className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition border ${selected === c.id ? "border-cyan-500/50 bg-cyan-500/10" : "border-slate-800 bg-slate-900/40 hover:bg-slate-800/50"}`}>
-                <div className={`relative w-16 h-10 rounded-lg cam-feed shrink-0`}>
-                  <div className="absolute inset-0 grid place-items-center text-slate-500"><I.camera className="w-4 h-4"/></div>
-                  <span className={`absolute top-1 right-1 w-1.5 h-1.5 rounded-full ${c.status==="online"?"bg-emerald-400":"bg-slate-600"}`}/>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{c.name}</div>
-                  <div className="text-[11px] text-slate-400 font-mono">{c.id} · {c.status === "online" ? `${c.fps} FPS` : "offline"}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );
 }
 
-function AlertsPage({ alerts, onToggle }) {
+function AlertsPage({ alerts, onToggle, retention, onSaveRetention }) {
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
+  const [retentionAmount, setRetentionAmount] = useState(String(retention?.amount ?? 7));
+  const [retentionUnit, setRetentionUnit] = useState(retention?.unit ?? "days");
+  const [retentionSaving, setRetentionSaving] = useState(false);
   const filtered = alerts.filter(a =>
     (filter === "all" || a.type === filter) &&
     (a.cam + a.roi).toLowerCase().includes(q.toLowerCase())
   );
   const handled = alerts.filter(a => a.handled).length;
+
+  useEffect(() => {
+    setRetentionAmount(String(retention?.amount ?? 7));
+    setRetentionUnit(retention?.unit ?? "days");
+  }, [retention?.amount, retention?.unit]);
+
+  const toggleRetention = () => onSaveRetention({
+    ...retention,
+    enabled: !retention?.enabled,
+  });
+
+  const saveRetention = async () => {
+    const amount = Math.max(1, Math.min(3650, Number.parseInt(retentionAmount, 10) || 1));
+    setRetentionAmount(String(amount));
+    setRetentionSaving(true);
+    await onSaveRetention({
+      enabled: Boolean(retention?.enabled),
+      amount,
+      unit: retentionUnit,
+    });
+    setRetentionSaving(false);
+  };
 
   const typeTone = t => t === "intrusion" ? "bg-rose-500/15 text-rose-300 border-rose-500/30" : "bg-amber-500/15 text-amber-300 border-amber-500/30";
 
@@ -366,6 +366,34 @@ function AlertsPage({ alerts, onToggle }) {
             <button key={k} onClick={()=>setFilter(k)}
               className={`px-3 py-1.5 text-xs rounded-lg transition ${filter===k ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
           ))}
+        </div>
+      </div>
+
+      <div className="glass rounded-2xl p-4 flex flex-wrap items-center gap-4">
+        <div className="flex-1 min-w-[230px]">
+          <div className="text-sm font-semibold">Automatic history cleanup</div>
+          <div className="text-xs text-slate-400 mt-1">Delete database alert results older than the selected period.</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <button type="button" role="switch" aria-checked={Boolean(retention?.enabled)} onClick={toggleRetention}
+              className={`relative w-11 h-6 rounded-full transition ${retention?.enabled ? "bg-cyan-500" : "bg-slate-700"}`}>
+              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition ${retention?.enabled ? "left-6" : "left-1"}`} />
+            </button>
+            {retention?.enabled ? "Enabled" : "Disabled"}
+          </label>
+          <input type="number" min="1" max="3650" value={retentionAmount}
+            onChange={e=>setRetentionAmount(e.target.value)}
+            className="w-20 bg-slate-900/80 border border-slate-700 rounded-lg px-2 py-2 text-sm" />
+          <select value={retentionUnit} onChange={e=>setRetentionUnit(e.target.value)}
+            className="bg-slate-900/80 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+          </select>
+          <button type="button" onClick={saveRetention} disabled={retentionSaving}
+            className="px-3 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-xs hover:bg-cyan-500/25 disabled:opacity-50">
+            {retentionSaving ? "Saving…" : "Save"}
+          </button>
         </div>
       </div>
 
@@ -529,6 +557,7 @@ function App() {
     detections_24h: 142,
     avg_confidence: 0.924,
   });
+  const [retention, setRetention] = useState({ enabled: false, amount: 7, unit: "days" });
   const [backendOnline, setBackendOnline] = useState(false);
   const [ws, setWs] = useState("connecting");
   const [clock, setClock] = useState(new Date());
@@ -544,17 +573,19 @@ function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [camRes, roiRes, alertRes, statRes] = await Promise.all([
+        const [camRes, roiRes, alertRes, statRes, retentionRes] = await Promise.all([
           apiFetch("/api/cameras"),
           apiFetch("/api/roi"),
           apiFetch("/api/alerts?limit=200"),
           apiFetch("/api/stats"),
+          apiFetch("/api/retention"),
         ]);
         if (cancelled) return;
         setCameras(camRes);
         setROI(roiRes);
         setAlerts(alertRes.map(normalizeAlert));
         setStats(statRes);
+        setRetention(retentionRes);
         setBackendOnline(true);
       } catch {
         if (!cancelled) setBackendOnline(false);
@@ -562,12 +593,14 @@ function App() {
     })();
     const t = setInterval(async () => {
       try {
-        const [camRes, statRes] = await Promise.all([
+        const [camRes, alertRes, statRes] = await Promise.all([
           apiFetch("/api/cameras"),
+          apiFetch("/api/alerts?limit=200"),
           apiFetch("/api/stats"),
         ]);
         if (!cancelled) {
           setCameras(camRes);
+          setAlerts(alertRes.map(normalizeAlert));
           setStats(statRes);
           setBackendOnline(true);
         }
@@ -583,7 +616,7 @@ function App() {
     if (backendOnline) return;
     const t = setInterval(() => {
       if (Math.random() > 0.65) {
-        const c = CAMERAS[Math.floor(Math.random()*3)];
+        const c = CAMERAS[0];
         setAlerts(prev => [{ id: Date.now(), cam: c.name, roi: "ROI", time: new Date().toLocaleTimeString("en-GB"), conf: 0.85 + Math.random()*0.14, type: Math.random()>0.8?"loitering":"intrusion", handled: false }, ...prev].slice(0, 30));
       }
     }, 6000);
@@ -661,6 +694,28 @@ function App() {
     } catch {}
   };
 
+  const saveRetention = async (next) => {
+    const normalized = {
+      enabled: Boolean(next.enabled),
+      amount: Math.max(1, Math.min(3650, Number(next.amount) || 1)),
+      unit: next.unit === "hours" ? "hours" : "days",
+    };
+    setRetention(normalized);
+    try {
+      const saved = await apiFetch("/api/retention", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(normalized),
+      });
+      setRetention(saved);
+      const alertRes = await apiFetch("/api/alerts?limit=200");
+      setAlerts(alertRes.map(normalizeAlert));
+      return saved;
+    } catch {
+      return null;
+    }
+  };
+
   const nav = [
     { key: "live", label: "Live Feed", icon: I.camera },
     { key: "alerts", label: "Alerts & History", icon: I.alert },
@@ -729,7 +784,7 @@ function App() {
         </div>
 
         {page === "live" && <LivePage cameras={cameras} roi={roi} backendOnline={backendOnline} stats={stats} />}
-        {page === "alerts" && <AlertsPage alerts={alerts} onToggle={toggleAlert} />}
+        {page === "alerts" && <AlertsPage alerts={alerts} onToggle={toggleAlert} retention={retention} onSaveRetention={saveRetention} />}
         {page === "roi" && <ROIPage roi={roi} onSaveROI={saveROI} onToggleROI={toggleROI} onDeleteROI={deleteROI} />}
       </main>
     </div>

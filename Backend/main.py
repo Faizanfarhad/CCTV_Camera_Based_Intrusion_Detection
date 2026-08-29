@@ -15,13 +15,19 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import cv2
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # Keep the backend importable until requirements are installed.
+    def load_dotenv():
+        return False
 
 from Backend import store
 from Backend import config as config_module
@@ -34,6 +40,8 @@ from Backend.config import (
     VIDEO_EXTENSIONS,
 )
 from Backend.processor import StreamManager
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("sentinel.backend")
@@ -50,6 +58,12 @@ class ROIVisibilityIn(BaseModel):
 
 class HandleIn(BaseModel):
     handled: bool = True
+
+
+class RetentionIn(BaseModel):
+    enabled: bool = False
+    amount: int = Field(default=7, ge=1, le=3650)
+    unit: Literal["hours", "days"] = "days"
 
 
 class ConnectionManager:
@@ -141,34 +155,49 @@ def build_stats() -> dict:
 
 
 def maybe_send_alerts(event: dict) -> None:
-    """Forward an intrusion to the alert modules when explicitly enabled.
+    """Forward high-confidence intrusions to the alert modules when enabled.
 
-    Sending real email/WhatsApp messages on every intrusion is noisy, so this is
-    opt-in via ``ENABLE_ALERTS=1`` in the environment.
+    Dashboard/SQLite events are created for every intrusion. External messages
+    are opt-in and are sent only when confidence is greater than the configured
+    threshold.
     """
     if os.getenv("ENABLE_ALERTS") != "1":
         return
+    confidence = float(event.get("conf", 0.0))
+    if confidence <= config_module.ALERT_CONFIDENCE_THRESHOLD:
+        logger.info(
+            "Skipping external alert for %s: confidence %.3f is not greater than %.3f",
+            event.get("cam", "unknown"),
+            confidence,
+            config_module.ALERT_CONFIDENCE_THRESHOLD,
+        )
+        return
+
     message = (
         f"Intrusion detected: {event['cam']} / {event['roi']} "
-        f"(confidence {event['conf']:.2f})"
+        f"(confidence {confidence:.2f})"
     )
     if os.getenv("ALERT_MAIL_TO"):
         try:
             from AlertSystem.mail_alert import MailAlert
 
-            MailAlert().send(
+            result = MailAlert().send(
                 sender=os.getenv("ALERT_MAIL_FROM", "onboarding@resend.dev"),
                 reciever=os.getenv("ALERT_MAIL_TO"),
                 subject="CCTV Intrusion Alert",
                 message=message,
             )
+            if result is None:
+                logger.warning("Email alert did not return a response")
         except Exception as exc:  # noqa: BLE001 - never break the pipeline
             logger.warning("Mail alert failed: %s", exc)
     if os.getenv("ALERT_WHATSAPP_TO"):
         try:
             from AlertSystem.whatsapp_alert import WhatsAPPAlert
 
-            WhatsAPPAlert(os.getenv("ALERT_WHATSAPP_TO"), message).send()
+            result = WhatsAPPAlert(os.getenv("ALERT_WHATSAPP_TO"), message).send()
+            if isinstance(result, dict) and result.get("status") == "failed":
+                logger.warning("WhatsApp alert failed: %s", result.get("error", "unknown error"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("WhatsApp alert failed: %s", exc)
 
@@ -185,19 +214,39 @@ def on_alert(camera: dict, roi: dict, confidence: float, event_type: str, snapsh
     )
     ws_manager.broadcast_threadsafe({"type": "alert", "data": event})
     ws_manager.broadcast_threadsafe({"type": "stats", "data": build_stats()})
-    maybe_send_alerts(event)
+    if event["conf"] > config_module.ALERT_CONFIDENCE_THRESHOLD:
+        threading.Thread(target=maybe_send_alerts, args=(event,), daemon=True).start()
 
 
 manager = StreamManager(get_roi=store.get_roi, on_alert=on_alert, config=config_module)
+
+
+async def retention_cleanup_loop():
+    while True:
+        await asyncio.sleep(60)
+        deleted = store.purge_expired_events()
+        if deleted:
+            logger.info("Removed %d expired alert result(s)", deleted)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store.init_db()
     ws_manager.loop = asyncio.get_running_loop()
+    deleted = store.purge_expired_events()
+    if deleted:
+        logger.info("Removed %d expired alert result(s) at startup", deleted)
+    cleanup_task = asyncio.create_task(retention_cleanup_loop())
     logger.info("Sentinel backend ready (db=%s)", config_module.DB_PATH)
-    yield
-    manager.stop_all()
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        manager.stop_all()
 
 
 app = FastAPI(title="Sentinel CCTV Intrusion API", lifespan=lifespan)
@@ -292,6 +341,20 @@ async def patch_alert(event_id: int, payload: HandleIn):
     if not store.mark_handled(event_id, payload.handled):
         raise HTTPException(status_code=404, detail="Alert not found.")
     return {"ok": True}
+
+
+@app.get("/api/retention")
+async def get_retention():
+    return store.get_retention()
+
+
+@app.put("/api/retention")
+async def put_retention(payload: RetentionIn):
+    retention = store.save_retention(payload.enabled, payload.amount, payload.unit)
+    deleted = store.purge_expired_events()
+    if deleted:
+        logger.info("Removed %d expired alert result(s) after retention update", deleted)
+    return retention
 
 
 # --------------------------------------------------------------------------- #

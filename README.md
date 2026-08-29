@@ -260,8 +260,8 @@ On startup the backend:
    multi-zone database by keeping its first polygon.
 3. Registers the REST + WebSocket + MJPEG routes.
 
-When you open the live view, a `StreamProcessor` thread starts for the selected
-camera and begins streaming annotated frames. Detected intrusions are written to
+When you open the live view, a `StreamProcessor` thread starts for the single
+configured camera and begins streaming annotated frames. Detected intrusions are written to
 SQLite, saved as snapshots in `saved_videos/snapshots/`, and pushed to the
 dashboard over WebSocket.
 
@@ -292,7 +292,7 @@ Base URL: `http://localhost:8000`
 |---|---|---|
 | `GET` | `/` | Serves the dashboard HTML. |
 | `GET` | `/api/health` | Returns `{"status":"ok"}`. |
-| `GET` | `/api/cameras` | Camera list with `status`, `fps`, `res`, `streaming`, and `stream` URL. |
+| `GET` | `/api/cameras` | The single configured camera with `status`, `fps`, `res`, `streaming`, and `stream` URL. |
 | `GET` | `/api/stats` | `cameras_online`, `cameras_total`, `roi_configured`, `detections_24h`, `avg_confidence`. |
 | `GET` | `/api/roi` | Get the configured ROI, or `null`. |
 | `PUT` | `/api/roi` | Replace the ROI. Body: `{"color", "pts": [[x,y], ...]}`. |
@@ -300,6 +300,8 @@ Base URL: `http://localhost:8000`
 | `DELETE` | `/api/roi` | Clear the ROI. |
 | `GET` | `/api/alerts` | Alert history. Optional query params: `limit`, `type`, `q`. |
 | `PATCH` | `/api/alerts/{event_id}` | Mark an alert handled. Body: `{"handled": true}`. |
+| `GET` | `/api/retention` | Get automatic alert-history cleanup settings. |
+| `PUT` | `/api/retention` | Set cleanup. Body: `{"enabled": true, "amount": 7, "unit": "days"}`. Only events older than the selected age are deleted. |
 | `GET` | `/api/videos` | List saved/recorded videos available for playback. |
 | `GET` | `/api/stream/live` | MJPEG stream from the live camera (OpenCV device `0`). |
 | `GET` | `/api/stream/video/{video_id}` | MJPEG stream of a saved video by its id from `/api/videos`. |
@@ -351,10 +353,13 @@ Enable it:
 export ENABLE_ALERTS=1
 ```
 
+Or add `ENABLE_ALERTS=1` to `.env`; the backend loads `.env` at startup.
+
 Then set the recipients/credentials in `.env`:
 
 ```dotenv
 # Email via Resend
+ENABLE_ALERTS=1
 RESEND_API = "your_resend_api_key"
 ALERT_MAIL_FROM = "onboarding@resend.dev"
 ALERT_MAIL_TO = "you@example.com"
@@ -379,9 +384,9 @@ logs the event without sending anything.
 
 All tuning values live in `Backend/config.py`.
 
-### Camera sources (`SOURCES`)
+### Single camera source (`SOURCES`)
 
-Each camera entry:
+The application uses one configured camera entry:
 
 ```python
 {
@@ -412,6 +417,7 @@ Each camera entry:
 | `PERSON_CONF_THRESHOLD` | `0.35` | Minimum YOLO confidence for a valid person. |
 | `ANOMALY_THRESHOLD` | `0.02` | Motion fraction inside the ROI that counts as anomalous. |
 | `ALERT_DEBOUNCE_SECONDS` | `30` | Minimum seconds between ROI alerts. |
+| `ALERT_CONFIDENCE_THRESHOLD` | `0.75` | Email/WhatsApp notifications require confidence strictly greater than 75%. |
 | `STREAM_FPS` | `12` | Target processing/streaming rate. |
 | `JPEG_QUALITY` | `70` | MJPEG frame quality. |
 

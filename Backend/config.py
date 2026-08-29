@@ -17,8 +17,8 @@ SNAPSHOT_DIR = BASE_DIR / "saved_videos" / "snapshots"
 # Dashboard entry point served by FastAPI at "/".
 DASHBOARD_PATH = BASE_DIR / "dashboard" / "index.html"
 
-# Camera sources. ``kind`` is either "video" (path relative to BASE_DIR) or
-# "camera" (OpenCV device index). ``enabled=False`` marks a camera as offline.
+# Single camera source. ``kind`` is either "video" (path relative to BASE_DIR)
+# or "camera" (OpenCV device index).
 SOURCES = [
     {
         "id": "cam-01",
@@ -28,33 +28,6 @@ SOURCES = [
         "enabled": True,
         "fps": 14,
         "res": "1080p",
-    },
-    {
-        "id": "cam-02",
-        "name": "Server Room",
-        "kind": "video",
-        "source": str(BASE_DIR / "testVideo" / "bird_video.mp4"),
-        "enabled": True,
-        "fps": 12,
-        "res": "720p",
-    },
-    {
-        "id": "cam-03",
-        "name": "Warehouse Bay",
-        "kind": "video",
-        "source": str(BASE_DIR / "testVideo" / "animal_video.mp4"),
-        "enabled": True,
-        "fps": 15,
-        "res": "1080p",
-    },
-    {
-        "id": "cam-04",
-        "name": "Parking Lot",
-        "kind": "video",
-        "source": str(BASE_DIR / "testVideo" / "columbina-moonlit-requiem.3840x2160.mp4"),
-        "enabled": False,
-        "fps": 0,
-        "res": "—",
     },
 ]
 
@@ -73,6 +46,7 @@ DETECT_EVERY = 3             # run YOLO every N frames (motion runs every frame)
 PERSON_CONF_THRESHOLD = 0.35 # minimum person confidence for an intrusion
 ANOMALY_THRESHOLD = 0.02     # motion fraction inside the ROI above which it is "anomalous"
 ALERT_DEBOUNCE_SECONDS = 30  # minimum time between ROI alerts
+ALERT_CONFIDENCE_THRESHOLD = 0.75  # notify only when person confidence is greater than 75%
 STREAM_FPS = 12              # target processing/streaming rate
 JPEG_QUALITY = 70
 
