@@ -412,7 +412,11 @@ async def put_notifications(payload: NotificationIn):
 # --------------------------------------------------------------------------- #
 # Live MJPEG stream
 # --------------------------------------------------------------------------- #
-def _mjpeg_generator(proc, cleanup_upload_id: Optional[str] = None):
+def _mjpeg_generator(
+    proc,
+    cleanup_upload_id: Optional[str] = None,
+    stop_when_disconnected: bool = False,
+):
     last_seq = -1
     try:
         while True:
@@ -426,8 +430,9 @@ def _mjpeg_generator(proc, cleanup_upload_id: Optional[str] = None):
             elif not proc.is_alive():
                 break
     finally:
-        if cleanup_upload_id:
+        if stop_when_disconnected:
             manager.stop(proc.camera["id"])
+        if cleanup_upload_id:
             _remove_uploaded_video(cleanup_upload_id)
 
 
@@ -496,7 +501,7 @@ async def stream_live():
     }
     proc = manager.ensure(camera)
     return StreamingResponse(
-        _mjpeg_generator(proc),
+        _mjpeg_generator(proc, stop_when_disconnected=True),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -542,7 +547,7 @@ async def stream_video(video_id: str):
     }
     proc = manager.ensure(camera)
     return StreamingResponse(
-        _mjpeg_generator(proc),
+        _mjpeg_generator(proc, stop_when_disconnected=True),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -553,7 +558,7 @@ async def stream_camera(camera_id: str):
         raise HTTPException(status_code=404, detail="Camera not found or offline.")
     proc = manager.ensure(camera)
     return StreamingResponse(
-        _mjpeg_generator(proc),
+        _mjpeg_generator(proc, stop_when_disconnected=True),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 

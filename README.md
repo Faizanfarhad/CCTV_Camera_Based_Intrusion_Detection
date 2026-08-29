@@ -275,7 +275,7 @@ Three pages are available in the sidebar:
 
 | Page | What it does |
 |---|---|
-| **Live Feed** | Select **Saved Video** to upload one clip and run ROI/person detection on demand. The temporary upload is processed once and removed after playback, so opening the dashboard does not start a camera or video-processing job. Also shows camera status, ROI status, 24h detections, and average confidence. |
+| **Live Feed** | Use **Live Video** to start/stop ROI/person detection from the configured camera source, or use **Saved Video** to upload one clip and process it once. Uploaded files are temporary and removed after playback, so opening the dashboard does not start processing. Also shows camera status, ROI status, 24h detections, and average confidence. |
 | **Alerts & History** | Live alert ticker + searchable/filterable history, with a button to mark each alert handled. |
 | **ROI Config** | Draw one polygon ROI on a canvas, save it, or clear it. |
 
@@ -307,7 +307,7 @@ Base URL: `http://localhost:8000`
 | `GET` | `/api/stream/live` | MJPEG stream from the live camera (OpenCV device `0`). |
 | `GET` | `/api/stream/upload/{video_id}` | Run detection once on a temporary uploaded video. |
 | `GET` | `/api/stream/video/{video_id}` | MJPEG stream of a saved video by its id from `/api/videos`. |
-| `GET` | `/api/stream/{camera_id}` | MJPEG live feed of a configured camera (`multipart/x-mixed-replace`). |
+| `GET` | `/api/stream/{camera_id}` | MJPEG live feed of a configured camera (`multipart/x-mixed-replace`). The dashboard's **Live Video** button uses this route. |
 
 Interactive docs are available at **http://localhost:8000/docs** (Swagger UI).
 

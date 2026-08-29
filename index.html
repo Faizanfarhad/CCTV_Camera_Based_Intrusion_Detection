@@ -245,10 +245,19 @@ function LiveFeed({ cam, boxes, roi, streamUrl, playing, backendOnline }) {
 function LivePage({ cameras, roi, backendOnline, stats }) {
   const [playing, setPlaying] = useState(true);
   const [boxes, setBoxes] = useState(MOCK_BOXES);
+  const [feedMode, setFeedMode] = useState("none"); // "none" | "live" | "video"
   const [uploadedVideo, setUploadedVideo] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const videoInputRef = useRef(null);
+  const cam = cameras[0] || CAMERAS[0];
+
+  const selectLiveVideo = () => {
+    setUploadError("");
+    setUploadedVideo(null);
+    setPlaying(true);
+    setFeedMode(current => current === "live" ? "none" : "live");
+  };
 
   const handleVideoSelected = async (event) => {
     const file = event.target.files?.[0];
@@ -263,6 +272,7 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
     setUploadError("");
     setUploading(true);
     setPlaying(true);
+    setFeedMode("none");
     try {
       const form = new FormData();
       form.append("file", file);
@@ -273,6 +283,7 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || `Upload failed (${response.status})`);
       setUploadedVideo(payload);
+      setFeedMode("video");
     } catch (error) {
       setUploadError(error.message || "Could not upload video.");
     } finally {
@@ -280,10 +291,17 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
     }
   };
 
-  const activeStreamUrl = backendOnline && uploadedVideo
-    ? API + `/api/stream/upload/${uploadedVideo.id}`
+  const liveStreamUrl = backendOnline && cam
+    ? (cam.stream ? API + cam.stream : API + `/api/stream/${cam.id}`)
     : null;
-  const displayCam = uploadedVideo
+  const activeStreamUrl = feedMode === "live"
+    ? liveStreamUrl
+    : feedMode === "video" && backendOnline && uploadedVideo
+      ? API + `/api/stream/upload/${uploadedVideo.id}`
+      : null;
+  const displayCam = feedMode === "live"
+    ? { ...cam, name: cam.name || "Live Video" }
+    : uploadedVideo
     ? { id: "upload", name: uploadedVideo.name, fps: "—", res: "—" }
     : { id: "saved-video", name: "Saved Video", fps: "—", res: "—" };
 
@@ -330,8 +348,12 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
               <I.camera className="w-4 h-4 text-cyan-300" /> {displayCam ? displayCam.name : "Live Feed"}
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <button onClick={selectLiveVideo} disabled={!backendOnline}
+                className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1 rounded-xl border transition ${feedMode === "live" ? "border-cyan-300/60 bg-cyan-500/20 text-cyan-200" : "border-cyan-400/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"} disabled:opacity-50 disabled:cursor-not-allowed`}>
+                <I.camera className="w-3.5 h-3.5" /> Live Video
+              </button>
               <input ref={videoInputRef} type="file" accept="video/*,.mp4,.avi,.mov,.mkv" className="hidden" onChange={handleVideoSelected} />
-              <button onClick={() => videoInputRef.current?.click()} disabled={uploading || !backendOnline}
+              <button onClick={() => { setFeedMode("none"); videoInputRef.current?.click(); }} disabled={uploading || !backendOnline}
                 className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1 rounded-xl border border-violet-400/40 bg-violet-500/15 text-violet-200 hover:bg-violet-500/25 disabled:opacity-50 disabled:cursor-not-allowed">
                 <I.history className="w-3.5 h-3.5" /> {uploading ? "Uploading…" : "Saved Video"}
               </button>
