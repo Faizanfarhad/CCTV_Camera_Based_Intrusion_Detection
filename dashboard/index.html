@@ -136,12 +136,20 @@ function normalizeAlert(d) {
 // point API/WebSocket requests at the backend explicitly. When the dashboard is
 // served by FastAPI itself (same-origin, port 8000) use relative URLs.
 const BACKEND_PORT = "8000";
-const BACKEND_ORIGIN = `http://localhost:${BACKEND_PORT}`;
-const servedByBackend = location.protocol !== "file:" && location.port === BACKEND_PORT;
+const LOCAL_BACKEND_ORIGIN = "http://localhost:" + BACKEND_PORT;
+const DEPLOYED_BACKEND_ORIGIN = "https://cctv-camera-based-intrusion-detection.onrender.com";
+const servedByBackend = location.protocol !== "file:" && (
+  location.port === BACKEND_PORT ||
+  location.hostname === "cctv-camera-based-intrusion-detection.onrender.com"
+);
+const openedLocally = location.protocol === "file:" ||
+  location.hostname === "localhost" ||
+  location.hostname === "127.0.0.1";
+const BACKEND_ORIGIN = openedLocally ? LOCAL_BACKEND_ORIGIN : DEPLOYED_BACKEND_ORIGIN;
 const API = servedByBackend ? "" : BACKEND_ORIGIN;
 const wsUrl = servedByBackend
-  ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`
-  : `ws://localhost:${BACKEND_PORT}/ws`;
+  ? (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws"
+  : BACKEND_ORIGIN.replace(/^http/, "ws") + "/ws";
 
 async function apiFetch(path, opts) {
   const controller = new AbortController();
