@@ -15,7 +15,7 @@ DB_PATH = DATA_DIR / "sentinel.db"
 SNAPSHOT_DIR = BASE_DIR / "saved_videos" / "snapshots"
 
 # Dashboard entry point served by FastAPI at "/".
-DASHBOARD_PATH = BASE_DIR / "dashboard" / "index.html"
+DASHBOARD_PATH = BASE_DIR / "index.html"
 
 # Single camera source. ``kind`` is either "video" (path relative to BASE_DIR)
 # or "camera" (OpenCV device index).
