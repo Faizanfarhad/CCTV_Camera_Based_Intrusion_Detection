@@ -144,18 +144,35 @@ const wsUrl = servedByBackend
   : `ws://localhost:${BACKEND_PORT}/ws`;
 
 async function apiFetch(path, opts) {
-  const res = await fetch(API + path, opts);
-  if (!res.ok) throw new Error(`API ${res.status}`);
-  return res.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(API + path, { ...(opts || {}), signal: controller.signal });
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    return res.json();
+  } catch (err) {
+    if (err?.name === "AbortError") throw new Error("Request timed out after 8 seconds");
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /* ---------------- Live feed overlay ---------------- */
-function LiveFeed({ cam, boxes, roi, streamUrl }) {
+function LiveFeed({ cam, boxes, roi, streamUrl, playing }) {
   return (
     <div className="cam-feed rounded-2xl h-full min-h-[300px]">
       <div className="scanline" />
-      {/* real backend stream */}
-      {streamUrl ? (
+      {/* real backend stream; removing the image pauses the MJPEG request */}
+      {!playing ? (
+        <div className="absolute inset-0 grid place-items-center bg-slate-950/90">
+          <div className="text-center">
+            <I.pause className="w-10 h-10 mx-auto text-slate-500 mb-2" />
+            <div className="text-sm font-semibold text-slate-300">Feed paused</div>
+            <div className="text-xs text-slate-500 mt-1">Press play to resume the stream</div>
+          </div>
+        </div>
+      ) : streamUrl ? (
         <img src={streamUrl} alt={cam.name} className="absolute inset-0 w-full h-full object-contain bg-black" />
       ) : (
         /* fake offline scene */
@@ -193,7 +210,7 @@ function LiveFeed({ cam, boxes, roi, streamUrl }) {
       {/* HUD */}
       <div className="absolute top-3 left-3 flex items-center gap-2">
         <span className="live-dot w-2.5 h-2.5 rounded-full bg-red-500" />
-        <span className="text-[11px] font-semibold tracking-widest text-red-300">LIVE</span>
+        <span className={"text-[11px] font-semibold tracking-widest " + (playing ? "text-red-300" : "text-slate-400")}>{playing ? "LIVE" : "PAUSED"}</span>
       </div>
       <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-300/80 bg-black/40 px-2 py-1 rounded">
         {cam.fps} FPS · {cam.res}
@@ -302,14 +319,14 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
                   {savedVideos.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
               )}
-              <button onClick={() => setPlaying(p => !p)}
+              <button onClick={() => setPlaying(p => !p)} aria-label={playing ? "Pause feed" : "Play feed"} title={playing ? "Pause feed" : "Play feed"}
                 className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition">
                 {playing ? <I.pause className="w-4 h-4"/> : <I.play className="w-4 h-4"/>}
               </button>
             </div>
           </div>
           <div className="h-[340px] md:h-[420px]">
-            <LiveFeed cam={displayCam} boxes={boxes} roi={roi} streamUrl={activeStreamUrl} />
+            <LiveFeed cam={displayCam} boxes={boxes} roi={roi} streamUrl={activeStreamUrl} playing={playing} />
           </div>
         </div>
 
@@ -550,17 +567,63 @@ function NotificationPage({ notifications, onSaveNotifications }) {
   const [email, setEmail] = useState(notifications?.email || "");
   const [whatsapp, setWhatsapp] = useState(notifications?.whatsapp || "");
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(!(notifications?.email || notifications?.whatsapp));
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     setEnabled(Boolean(notifications?.enabled));
     setEmail(notifications?.email || "");
     setWhatsapp(notifications?.whatsapp || "");
+    setEditing(!(notifications?.email || notifications?.whatsapp));
   }, [notifications?.enabled, notifications?.email, notifications?.whatsapp]);
 
   const save = async () => {
+    setSaveError("");
     setSaving(true);
-    await onSaveNotifications({ enabled, email, whatsapp });
-    setSaving(false);
+    try {
+      const saved = await onSaveNotifications({ enabled, email, whatsapp });
+      if (saved) {
+        setEditing(false);
+      } else {
+        setSaveError("Could not save notification settings. Check that the backend is running.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearRecipients = async () => {
+    setSaveError("");
+    setSaving(true);
+    try {
+      const saved = await onSaveNotifications({ enabled: false, email: "", whatsapp: "" });
+      if (saved) {
+        setEnabled(false);
+        setEmail("");
+        setWhatsapp("");
+        setEditing(true);
+      } else {
+        setSaveError("Could not clear notification settings. Check that the backend is running.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleEnabled = async () => {
+    const nextEnabled = !enabled;
+    setSaveError("");
+    setEnabled(nextEnabled);
+    setSaving(true);
+    try {
+      const saved = await onSaveNotifications({ enabled: nextEnabled, email, whatsapp });
+      if (!saved) {
+        setEnabled(!nextEnabled);
+        setSaveError("Could not update notifications. Add a recipient and check the backend.");
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -579,13 +642,32 @@ function NotificationPage({ notifications, onSaveNotifications }) {
             <div className="text-sm font-medium">Enable email and WhatsApp alerts</div>
             <div className="text-[11px] text-slate-500 mt-1">Alerts are sent when person confidence is above 70%.</div>
           </div>
-          <button type="button" role="switch" aria-checked={enabled} onClick={()=>setEnabled(v=>!v)}
+          <button type="button" role="switch" aria-checked={enabled} onClick={toggleEnabled} disabled={saving}
             className={"relative w-11 h-6 rounded-full transition " + (enabled ? "bg-cyan-500" : "bg-slate-700")}>
             <span className={"absolute top-1 w-4 h-4 rounded-full bg-white transition " + (enabled ? "left-6" : "left-1")} />
           </button>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-4 mt-4">
+        <div className="mt-4 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold text-slate-300">Registered destinations</div>
+              <div className="text-[11px] text-slate-500 mt-1">These are the recipients currently used for alerts.</div>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={()=>setEditing(true)} disabled={saving}
+                className="px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-50">Edit</button>
+              <button type="button" onClick={clearRecipients} disabled={saving || !(notifications?.email || notifications?.whatsapp)}
+                className="px-3 py-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 text-xs text-rose-300 hover:bg-rose-500/20 disabled:opacity-50">Clear</button>
+            </div>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3 mt-3 text-sm">
+            <div><span className="text-[11px] text-slate-500 block">Email</span><span className="text-slate-200 break-all">{notifications?.email || "Not registered"}</span></div>
+            <div><span className="text-[11px] text-slate-500 block">WhatsApp</span><span className="text-slate-200">{notifications?.whatsapp || "Not registered"}</span></div>
+          </div>
+        </div>
+
+        {editing && <div className="grid md:grid-cols-2 gap-4 mt-4">
           <label className="text-xs text-slate-300">
             Email address
             <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"
@@ -596,15 +678,16 @@ function NotificationPage({ notifications, onSaveNotifications }) {
             <input type="tel" value={whatsapp} onChange={e=>setWhatsapp(e.target.value)} placeholder="+911234567890"
               className="mt-2 w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2.5 text-sm" />
           </label>
-        </div>
+        </div>}
 
         <div className="mt-4 flex items-center justify-between gap-3">
           <div className="text-[11px] text-slate-500">API credentials remain in the server .env file.</div>
-          <button type="button" onClick={save} disabled={saving}
+          {editing && <button type="button" onClick={save} disabled={saving}
             className="px-4 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-xs hover:bg-cyan-500/25 disabled:opacity-50">
             {saving ? "Saving…" : "Save notification settings"}
-          </button>
+          </button>}
         </div>
+        {saveError && <div className="mt-3 text-xs text-rose-300">{saveError}</div>}
       </div>
     </div>
   );
@@ -791,8 +874,6 @@ function App() {
       email: String(next.email || "").trim(),
       whatsapp: String(next.whatsapp || "").trim(),
     };
-    const previous = notifications;
-    setNotifications(normalized);
     try {
       const saved = await apiFetch("/api/notifications", {
         method: "PUT",

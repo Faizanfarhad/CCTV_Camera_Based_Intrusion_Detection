@@ -46,7 +46,7 @@ DETECT_EVERY = 3             # run YOLO every N frames (motion runs every frame)
 PERSON_CONF_THRESHOLD = 0.35 # minimum person confidence for an intrusion
 ANOMALY_THRESHOLD = 0.02     # motion fraction inside the ROI above which it is "anomalous"
 ALERT_DEBOUNCE_SECONDS = 30  # minimum time between ROI alerts
-ALERT_CONFIDENCE_THRESHOLD = 0.70  # notify only when person confidence is greater than 70%
+ALERT_CONFIDENCE_THRESHOLD = 0.65  # notify only when person confidence is greater than 70%
 STREAM_FPS = 12              # target processing/streaming rate
 JPEG_QUALITY = 70
 
