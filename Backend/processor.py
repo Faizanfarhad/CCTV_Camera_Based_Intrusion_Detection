@@ -16,6 +16,7 @@ a configured ROI.
 import threading
 import time
 import colorsys
+import logging
 import re
 from pathlib import Path
 
@@ -26,6 +27,9 @@ from Backend.config import SNAPSHOT_DIR
 from VideoIngestion.denoise import denoise_frame
 from DetectionEngine.motion_detection import foreground_model
 from DetectionEngine.visualize_polyogn import extract_roi
+
+
+logger = logging.getLogger("sentinel.processor")
 
 
 def point_in_polygon(pt, poly) -> bool:
@@ -115,6 +119,7 @@ class StreamProcessor(threading.Thread):
         self._latest_jpeg = None
         self._last_alert = 0.0
         self.fps = 0.0
+        self._detections = []
 
         self.motion = foreground_model(var_threshold=20, min_threshold=200)
 
@@ -212,14 +217,103 @@ class StreamProcessor(threading.Thread):
     def stop(self):
         self._stop.set()
 
+    def process_frame(self, frame, frame_idx=0):
+        """Run MOG2, YOLO, ROI checks and annotation on one BGR frame."""
+        started = time.time()
+        frame = self._resize(frame, self.process_width)
+        denoised = denoise_frame(
+            frame,
+            method=self.camera.get("denoise", "fast"),
+            strength=int(self.camera.get("denoise_strength", 10)),
+        )
+        motion_mask = self.motion.apply(denoised)
+
+        roi = self.get_roi()
+        h, w = denoised.shape[:2]
+
+        # Refresh YOLO detections periodically; reuse them in between so the
+        # stream stays smooth while inference is happening.
+        if frame_idx % self.detect_every == 0:
+            with self.bg_lock:
+                self._detections, _ = self.bg_detector(denoised)
+            self._detections = [
+                d for d in self._detections if d["confidence"] >= self.person_conf
+            ]
+        detections = self._detections
+
+        display = denoised.copy()
+        pixel_roi = None
+        if roi:
+            poly = self._roi_to_pixels(roi["pts"], w, h)
+            if len(poly) >= 3:
+                pixel_roi = poly
+                if roi.get("visible", True):
+                    self._draw_roi(display, poly, roi["color"])
+
+        # Draw detected persons and check whether each person's centroid is
+        # inside the ROI.
+        intrusions = []
+        for det in detections:
+            x1, y1, x2, y2 = det["bbox"]
+            cx, cy = det["centroid"]
+            inside_roi = pixel_roi is not None and point_in_polygon((cx, cy), pixel_roi)
+            color = (0, 0, 255) if inside_roi else (0, 255, 0)
+            self.bg_detector.draw_border(
+                display, (int(x1), int(y1)), (int(x2), int(y2)), color=color, thickness=3
+            )
+            self.bg_detector._draw_label(
+                display, f"person {det['confidence']:.2f}", int(x1), int(y1), color=color
+            )
+            if inside_roi:
+                intrusions.append(det)
+
+        # Emit debounced alerts for person-in-ROI intrusions.
+        now = time.time()
+        if roi and intrusions and now - self._last_alert >= self.alert_debounce:
+            self._last_alert = now
+            det = intrusions[0]
+            snapshot_path = self._save_snapshot(display, roi, det["confidence"])
+            self.on_alert(
+                self.camera,
+                roi,
+                det["confidence"],
+                "intrusion",
+                snapshot_path,
+            )
+
+        # Compute and show the ROI motion score.
+        if roi and pixel_roi and roi.get("visible", True):
+            score = self._motion_score(motion_mask, pixel_roi)
+            first = pixel_roi[0]
+            cv2.putText(
+                display,
+                f"ROI {score:.3f}",
+                (first[0], max(14, first[1] - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                hex_to_bgr(roi["color"]),
+                1,
+                cv2.LINE_AA,
+            )
+
+        self.fps = 1.0 / max(0.001, time.time() - started)
+        self._draw_status(display, len(detections), pixel_roi is not None)
+        ok, buf = cv2.imencode(
+            ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+        )
+        return buf.tobytes() if ok else None
 
     def run(self):
         cap = self._open_capture()
         if cap is None:
+            logger.error("Could not open source for %s: %r", self.camera["name"], self.camera.get("source"))
             return
 
+        logger.info(
+            "Started processor for %s (MOG2 foreground + YOLO person detection)",
+            self.camera["name"],
+        )
         frame_idx = 0
-        detections = []
         try:
             while not self._stop.is_set():
                 started = time.time()
@@ -242,97 +336,17 @@ class StreamProcessor(threading.Thread):
                         break
                     continue
 
-                frame = self._resize(frame, self.process_width)
-                denoised = denoise_frame(
-                    frame,
-                    method=self.camera.get("denoise", "fast"),
-                    strength=int(self.camera.get("denoise_strength", 10)),
-                )
-                motion_mask = self.motion.apply(denoised)
-
-                roi = self.get_roi()
-                h, w = denoised.shape[:2]
-
-                # Refresh YOLO detections periodically; reuse them in between
-                # so the stream stays smooth while inference is happening.
-                if frame_idx % self.detect_every == 0:
-                    with self.bg_lock:
-                        detections, _ = self.bg_detector(denoised)
-                    detections = [
-                        d for d in detections if d["confidence"] >= self.person_conf
-                    ]
-
-                display = denoised.copy()
-                pixel_roi = None
-                if roi:
-                    poly = self._roi_to_pixels(roi["pts"], w, h)
-                    if len(poly) >= 3:
-                        pixel_roi = poly
-                        if roi.get("visible", True):
-                            self._draw_roi(display, poly, roi["color"])
-
-
-                # Draw detected persons and check whether each person's
-                # centroid is inside the ROI.
-                intrusions = []
-                for det in detections:
-                    x1, y1, x2, y2 = det["bbox"]
-                    cx, cy = det["centroid"]
-                    inside_roi = pixel_roi is not None and point_in_polygon((cx, cy), pixel_roi)
-                    color = (0, 0, 255) if inside_roi else (0, 255, 0)
-                    self.bg_detector.draw_border(
-                        display, (int(x1), int(y1)), (int(x2), int(y2)), color=color, thickness=3
-                    )
-                    self.bg_detector._draw_label(
-                        display, f"person {det['confidence']:.2f}", int(x1), int(y1), color=color
-                    )
-                    if inside_roi:
-                        intrusions.append(det)
-
-                # Emit debounced alerts for person-in-ROI intrusions.
-                now = time.time()
-                if roi and intrusions and now - self._last_alert >= self.alert_debounce:
-                    self._last_alert = now
-                    det = intrusions[0]
-                    snapshot_path = self._save_snapshot(display, roi, det["confidence"])
-                    self.on_alert(
-                        self.camera,
-                        roi,
-                        det["confidence"],
-                        "intrusion",
-                        snapshot_path,
-                    )
-
-                # Compute the ROI anomaly score for the on-screen summary.
-                if roi and pixel_roi and roi.get("visible", True):
-                    score = self._motion_score(motion_mask, pixel_roi)
-                    first = pixel_roi[0]
-                    label = f"ROI {score:.3f}"
-                    cv2.putText(
-                        display,
-                        label,
-                        (first[0], max(14, first[1] - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        hex_to_bgr(roi["color"]),
-                        1,
-                        cv2.LINE_AA,
-                    )
-
-                self._draw_status(display, len(detections), pixel_roi is not None)
-
-                ok, buf = cv2.imencode(
-                    ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
-                )
-                if ok:
-                    self._set_frame(buf.tobytes())
-
-                self.fps = 1.0 / max(0.001, time.time() - started)
+                jpeg = self.process_frame(frame, frame_idx)
+                if jpeg:
+                    self._set_frame(jpeg)
                 frame_idx += 1
                 elapsed = time.time() - started
                 time.sleep(max(0.0, 1.0 / self.target_fps - elapsed))
+        except Exception:
+            logger.exception("Processor failed for %s", self.camera["name"])
         finally:
             cap.release()
+            logger.info("Stopped processor for %s", self.camera["name"])
 
 
 
@@ -352,8 +366,22 @@ class StreamManager:
         if self.bg_detector is None:
             from DetectionEngine.background_model import background_model
 
+            logger.info("Loading YOLO person detector")
             self.bg_detector = background_model()
+            logger.info("YOLO person detector ready")
         return self.bg_detector
+
+    def create_processor(self, camera):
+        """Create a processor for externally supplied frames (browser webcam)."""
+        with self._lock:
+            return StreamProcessor(
+                camera,
+                self.get_roi,
+                self.on_alert,
+                self._get_bg_detector(),
+                self.bg_lock,
+                self.config,
+            )
 
     def ensure(self, camera):
         with self._lock:

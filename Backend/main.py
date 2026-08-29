@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import cv2
+import numpy as np
 from fastapi import File, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -561,6 +562,51 @@ async def stream_camera(camera_id: str):
         _mjpeg_generator(proc, stop_when_disconnected=True),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Browser integrated-camera detection
+# --------------------------------------------------------------------------- #
+@app.websocket("/ws/live")
+async def live_video_websocket(ws: WebSocket):
+    """Receive browser webcam JPEGs and return annotated detection JPEGs."""
+    await ws.accept()
+    processor = None
+    camera = {
+        "id": "browser-live",
+        "name": "Integrated Camera",
+        "kind": "browser",
+        "source": "browser",
+        "enabled": True,
+        "fps": 0,
+        "res": "—",
+    }
+    try:
+        processor = await asyncio.to_thread(manager.create_processor, camera)
+        logger.info(
+            "Browser integrated-camera detection connected (MOG2 foreground + YOLO person detection)"
+        )
+        frame_idx = 0
+        while True:
+            payload = await ws.receive_bytes()
+            frame = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+            jpeg = await asyncio.to_thread(processor.process_frame, frame, frame_idx)
+            if jpeg:
+                await ws.send_bytes(jpeg)
+            frame_idx += 1
+    except WebSocketDisconnect:
+        logger.info("Browser integrated-camera detection disconnected")
+    except Exception:
+        logger.exception("Browser integrated-camera detection failed")
+        try:
+            await ws.close(code=1011)
+        except Exception:
+            pass
+    finally:
+        if processor is not None:
+            processor.stop()
 
 
 # --------------------------------------------------------------------------- #

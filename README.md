@@ -275,7 +275,7 @@ Three pages are available in the sidebar:
 
 | Page | What it does |
 |---|---|
-| **Live Feed** | Use **Live Video** to start/stop ROI/person detection from the backend host's integrated camera (`/api/stream/live`), or use **Saved Video** to upload one clip and process it once. Uploaded files are temporary and removed after playback, so opening the dashboard does not start processing. Also shows camera status, ROI status, 24h detections, and average confidence. |
+| **Live Feed** | Use **Live Video** to start/stop ROI/person detection from the browser's integrated camera (frames are sent to `/ws/live`), or use **Saved Video** to upload one clip and process it once. Uploaded files are temporary and removed after playback, so opening the dashboard does not start processing. Also shows camera status, ROI status, 24h detections, and average confidence. |
 | **Alerts & History** | Live alert ticker + searchable/filterable history, with a button to mark each alert handled. |
 | **ROI Config** | Draw one polygon ROI on a canvas, save it, or clear it. |
 
@@ -305,6 +305,7 @@ Base URL: `http://localhost:8000`
 | `GET` | `/api/videos` | List saved/recorded videos available for playback. |
 | `POST` | `/api/videos/upload` | Upload one video for on-demand detection. Multipart field: `file`. |
 | `GET` | `/api/stream/live` | MJPEG stream from the live camera (OpenCV device `0`). |
+| `WebSocket` | `/ws/live` | Receives browser-camera JPEG frames and returns annotated JPEG frames after MOG2/YOLO/ROI processing. |
 | `GET` | `/api/stream/upload/{video_id}` | Run detection once on a temporary uploaded video. |
 | `GET` | `/api/stream/video/{video_id}` | MJPEG stream of a saved video by its id from `/api/videos`. |
 | `GET` | `/api/stream/{camera_id}` | MJPEG live feed of a configured camera (`multipart/x-mixed-replace`). |
@@ -416,8 +417,10 @@ CAMERA_SOURCE=rtsp://username:password@camera-host:554/stream
 On Render, a laptop/USB camera is not available, and ignored local folders such
 as `testVideo/` are not deployed. Set `CAMERA_SOURCE` to a reachable RTSP/IP
 camera URL if you need the configured camera API. The dashboard's **Live Video**
-button uses the separate integrated-camera route (`LIVE_CAMERA_INDEX`, default
-`0`), while **Saved Video** uses temporary uploads.
+button uses the browser's integrated camera and sends frames to the backend for
+MOG2/YOLO/ROI processing, while **Saved Video** uses temporary uploads. The
+legacy `/api/stream/live` route still reads `LIVE_CAMERA_INDEX` on the backend
+host when used directly.
 
 | Setting | Default | Meaning |
 |---|---|---|

@@ -150,6 +150,7 @@ const API = servedByBackend ? "" : BACKEND_ORIGIN;
 const wsUrl = servedByBackend
   ? (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws"
   : BACKEND_ORIGIN.replace(/^http/, "ws") + "/ws";
+const liveWsUrl = wsUrl.replace(/\/ws$/, "/ws/live");
 
 async function apiFetch(path, opts) {
   const controller = new AbortController();
@@ -167,6 +168,129 @@ async function apiFetch(path, opts) {
 }
 
 /* ---------------- Live feed overlay ---------------- */
+function BrowserLiveFeed({ playing, backendOnline }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const socketRef = useRef(null);
+  const frameUrlRef = useRef(null);
+  const [frameUrl, setFrameUrl] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    let mediaStream = null;
+    let socket = null;
+    let framePending = false;
+
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      if (socket) socket.close();
+      if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+      if (videoRef.current) videoRef.current.srcObject = null;
+      socketRef.current = null;
+    };
+
+    if (!playing || !backendOnline) return stop;
+
+    const start = async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("This browser does not allow integrated-camera access.");
+        }
+        mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        if (cancelled) return;
+
+        const video = videoRef.current;
+        video.srcObject = mediaStream;
+        await video.play();
+
+        socket = new WebSocket(liveWsUrl);
+        socket.binaryType = "blob";
+        socketRef.current = socket;
+        socket.onopen = () => {
+          timer = setInterval(() => {
+            if (cancelled || framePending || socket.readyState !== WebSocket.OPEN || !video.videoWidth) return;
+            framePending = true;
+            const canvas = canvasRef.current;
+            const scale = Math.min(1, 960 / video.videoWidth);
+            canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+            canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+            canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(blob => {
+              framePending = false;
+              if (!cancelled && blob && socket.readyState === WebSocket.OPEN) socket.send(blob);
+            }, "image/jpeg", 0.72);
+          }, 150);
+        };
+        socket.onmessage = event => {
+          const nextUrl = URL.createObjectURL(event.data);
+          if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
+          frameUrlRef.current = nextUrl;
+          setFrameUrl(nextUrl);
+        };
+        socket.onerror = () => setError("Live detection connection failed. Check the backend logs.");
+        socket.onclose = () => {
+          if (!cancelled) setError("Live detection connection closed.");
+        };
+      } catch (err) {
+        if (!cancelled) setError(err.message || "Could not access the integrated camera.");
+        stop();
+      }
+    };
+
+    setError("");
+    start();
+    return () => {
+      cancelled = true;
+      stop();
+      if (frameUrlRef.current) {
+        URL.revokeObjectURL(frameUrlRef.current);
+        frameUrlRef.current = null;
+      }
+      setFrameUrl(null);
+    };
+  }, [playing, backendOnline]);
+
+  return (
+    <div className="cam-feed rounded-2xl h-full min-h-[300px]">
+      <video ref={videoRef} muted playsInline className="hidden" />
+      <canvas ref={canvasRef} className="hidden" />
+      {!playing ? (
+        <div className="absolute inset-0 grid place-items-center bg-slate-950/90">
+          <div className="text-center">
+            <I.pause className="w-10 h-10 mx-auto text-slate-500 mb-2" />
+            <div className="text-sm font-semibold text-slate-300">Live video paused</div>
+            <div className="text-xs text-slate-500 mt-1">Press play to resume camera detection</div>
+          </div>
+        </div>
+      ) : error ? (
+        <div className="absolute inset-0 grid place-items-center bg-slate-950/90 p-6 text-center">
+          <div>
+            <I.alert className="w-10 h-10 mx-auto text-rose-400/80 mb-2" />
+            <div className="text-sm font-semibold text-rose-200">Live camera unavailable</div>
+            <div className="text-xs text-slate-400 mt-1">{error}</div>
+          </div>
+        </div>
+      ) : frameUrl ? (
+        <img src={frameUrl} alt="Integrated camera detection" className="absolute inset-0 w-full h-full object-contain bg-black" />
+      ) : (
+        <div className="absolute inset-0 grid place-items-center bg-slate-950/90">
+          <div className="text-center">
+            <div className="spinner w-9 h-9 mx-auto mb-3" />
+            <div className="text-sm font-semibold text-slate-300">Starting camera detection…</div>
+          </div>
+        </div>
+      )}
+      <div className="absolute top-3 left-3 flex items-center gap-2">
+        <span className="live-dot w-2.5 h-2.5 rounded-full bg-red-500" />
+        <span className={"text-[11px] font-semibold tracking-widest " + (playing ? "text-red-300" : "text-slate-400")}>{playing ? "LIVE" : "PAUSED"}</span>
+      </div>
+      <div className="absolute bottom-3 left-3 text-[11px] font-mono text-slate-400">Integrated Camera</div>
+    </div>
+  );
+}
+
 function LiveFeed({ cam, boxes, roi, streamUrl, playing, backendOnline }) {
   return (
     <div className="cam-feed rounded-2xl h-full min-h-[300px]">
@@ -290,12 +414,9 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
     }
   };
 
-  // Live Video always uses the integrated webcam on the backend host.
+  // Live Video sends the browser's integrated webcam frames to the backend.
   // It is intentionally separate from the uploaded-video processing route.
-  const liveStreamUrl = backendOnline ? API + "/api/stream/live" : null;
-  const activeStreamUrl = feedMode === "live"
-    ? liveStreamUrl
-    : feedMode === "video" && backendOnline && uploadedVideo
+  const activeStreamUrl = feedMode === "video" && backendOnline && uploadedVideo
       ? API + `/api/stream/upload/${uploadedVideo.id}`
       : null;
   const displayCam = feedMode === "live"
@@ -356,7 +477,7 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
                 className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1 rounded-xl border border-violet-400/40 bg-violet-500/15 text-violet-200 hover:bg-violet-500/25 disabled:opacity-50 disabled:cursor-not-allowed">
                 <I.history className="w-3.5 h-3.5" /> {uploading ? "Uploading…" : "Saved Video"}
               </button>
-              <button onClick={() => setPlaying(p => !p)} disabled={!uploadedVideo || uploading} aria-label={playing ? "Pause feed" : "Play feed"} title={playing ? "Pause feed" : "Play feed"}
+              <button onClick={() => setPlaying(p => !p)} disabled={feedMode === "none" || uploading} aria-label={playing ? "Pause feed" : "Play feed"} title={playing ? "Pause feed" : "Play feed"}
                 className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition disabled:opacity-50 disabled:cursor-not-allowed">
                 {playing ? <I.pause className="w-4 h-4"/> : <I.play className="w-4 h-4"/>}
               </button>
@@ -364,7 +485,11 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
           </div>
           {uploadError && <div className="mb-3 text-xs text-rose-300">{uploadError}</div>}
           <div className="h-[340px] md:h-[420px]">
-            <LiveFeed cam={displayCam} boxes={boxes} roi={roi} streamUrl={activeStreamUrl} playing={playing} backendOnline={backendOnline} />
+            {feedMode === "live" ? (
+              <BrowserLiveFeed playing={playing} backendOnline={backendOnline} />
+            ) : (
+              <LiveFeed cam={displayCam} boxes={boxes} roi={roi} streamUrl={activeStreamUrl} playing={playing} backendOnline={backendOnline} />
+            )}
           </div>
         </div>
 
