@@ -232,7 +232,11 @@ class StreamProcessor(threading.Thread):
                         if cap is None:
                             break
                         continue
-                    # Loop recorded files so the live view never goes dark.
+                    # Regular configured video sources loop so the dashboard
+                    # remains available. Uploaded review videos are marked as
+                    # one-shot and stop when the file reaches its end.
+                    if not self.camera.get("loop_video", True):
+                        break
                     cap = self._open_capture()
                     if cap is None:
                         break

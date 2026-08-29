@@ -167,7 +167,7 @@ async function apiFetch(path, opts) {
 }
 
 /* ---------------- Live feed overlay ---------------- */
-function LiveFeed({ cam, boxes, roi, streamUrl, playing }) {
+function LiveFeed({ cam, boxes, roi, streamUrl, playing, backendOnline }) {
   return (
     <div className="cam-feed rounded-2xl h-full min-h-[300px]">
       <div className="scanline" />
@@ -182,6 +182,14 @@ function LiveFeed({ cam, boxes, roi, streamUrl, playing }) {
         </div>
       ) : streamUrl ? (
         <img src={streamUrl} alt={cam.name} className="absolute inset-0 w-full h-full object-contain bg-black" />
+      ) : backendOnline ? (
+        <div className="absolute inset-0 grid place-items-center bg-slate-950/90">
+          <div className="text-center">
+            <I.history className="w-10 h-10 mx-auto text-cyan-400/60 mb-2" />
+            <div className="text-sm font-semibold text-slate-300">No video selected</div>
+            <div className="text-xs text-slate-500 mt-1">Choose Saved Video to start detection</div>
+          </div>
+        </div>
       ) : (
         /* fake offline scene */
         <svg viewBox="0 0 100 60" preserveAspectRatio="none" className="absolute inset-0 w-full h-full opacity-90">
@@ -237,36 +245,47 @@ function LiveFeed({ cam, boxes, roi, streamUrl, playing }) {
 function LivePage({ cameras, roi, backendOnline, stats }) {
   const [playing, setPlaying] = useState(true);
   const [boxes, setBoxes] = useState(MOCK_BOXES);
-  const [feedMode, setFeedMode] = useState("camera"); // "camera" | "live" | "video"
-  const [savedVideos, setSavedVideos] = useState([]);
-  const [selectedVideoId, setSelectedVideoId] = useState("");
-  const cam = cameras[0] || CAMERAS[0];
+  const [uploadedVideo, setUploadedVideo] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const videoInputRef = useRef(null);
 
-  // Load the list of saved/recorded videos available for playback.
-  useEffect(() => {
-    if (!backendOnline) return;
-    apiFetch("/api/videos")
-      .then(videos => {
-        setSavedVideos(videos);
-        if (videos.length && !selectedVideoId) setSelectedVideoId(videos[0].id);
-      })
-      .catch(() => {});
-  }, [backendOnline]);
+  const handleVideoSelected = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!backendOnline) {
+      setUploadError("Connect to the backend before uploading a video.");
+      return;
+    }
 
-  const cameraStreamUrl = backendOnline && cam && cam.status === "online"
-    ? (cam.stream ? API + cam.stream : API + `/api/stream/${cam.id}`)
+    setUploadedVideo(null);
+    setUploadError("");
+    setUploading(true);
+    setPlaying(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch(API + "/api/videos/upload", {
+        method: "POST",
+        body: form,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `Upload failed (${response.status})`);
+      setUploadedVideo(payload);
+    } catch (error) {
+      setUploadError(error.message || "Could not upload video.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const activeStreamUrl = backendOnline && uploadedVideo
+    ? API + `/api/stream/upload/${uploadedVideo.id}`
     : null;
-
-  let activeStreamUrl = cameraStreamUrl;
-  let displayCam = cam;
-  if (backendOnline && feedMode === "live") {
-    activeStreamUrl = API + "/api/stream/live";
-    displayCam = { id: "live", name: "Live Camera", fps: "—", res: "—" };
-  } else if (backendOnline && feedMode === "video" && selectedVideoId) {
-    activeStreamUrl = API + `/api/stream/video/${selectedVideoId}`;
-    const v = savedVideos.find(x => x.id === selectedVideoId);
-    displayCam = { id: "video", name: v ? v.name : "Saved Video", fps: "—", res: "—" };
-  }
+  const displayCam = uploadedVideo
+    ? { id: "upload", name: uploadedVideo.name, fps: "—", res: "—" }
+    : { id: "saved-video", name: "Saved Video", fps: "—", res: "—" };
 
   useEffect(() => {
     if (!playing || backendOnline) return;
@@ -311,32 +330,20 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
               <I.camera className="w-4 h-4 text-cyan-300" /> {displayCam ? displayCam.name : "Live Feed"}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex rounded-xl overflow-hidden border border-slate-700">
-                {openedLocally && (
-                  <button onClick={() => setFeedMode("live")}
-                    className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${feedMode === "live" ? "bg-cyan-500/20 text-cyan-300" : "bg-slate-900/60 text-slate-400 hover:text-slate-200"}`}>
-                    <I.camera className="w-3.5 h-3.5" /> Live Camera
-                  </button>
-                )}
-                <button onClick={() => setFeedMode("video")}
-                  className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${feedMode === "video" ? "bg-violet-500/20 text-violet-300" : "bg-slate-900/60 text-slate-400 hover:text-slate-200"}`}>
-                  <I.history className="w-3.5 h-3.5" /> Saved Video
-                </button>
-              </div>
-              {feedMode === "video" && (
-                <select value={selectedVideoId} onChange={e => setSelectedVideoId(e.target.value)}
-                  className="bg-slate-900/80 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 max-w-[220px]">
-                  {savedVideos.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
-              )}
-              <button onClick={() => setPlaying(p => !p)} aria-label={playing ? "Pause feed" : "Play feed"} title={playing ? "Pause feed" : "Play feed"}
-                className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition">
+              <input ref={videoInputRef} type="file" accept="video/*,.mp4,.avi,.mov,.mkv" className="hidden" onChange={handleVideoSelected} />
+              <button onClick={() => videoInputRef.current?.click()} disabled={uploading || !backendOnline}
+                className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1 rounded-xl border border-violet-400/40 bg-violet-500/15 text-violet-200 hover:bg-violet-500/25 disabled:opacity-50 disabled:cursor-not-allowed">
+                <I.history className="w-3.5 h-3.5" /> {uploading ? "Uploading…" : "Saved Video"}
+              </button>
+              <button onClick={() => setPlaying(p => !p)} disabled={!uploadedVideo || uploading} aria-label={playing ? "Pause feed" : "Play feed"} title={playing ? "Pause feed" : "Play feed"}
+                className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition disabled:opacity-50 disabled:cursor-not-allowed">
                 {playing ? <I.pause className="w-4 h-4"/> : <I.play className="w-4 h-4"/>}
               </button>
             </div>
           </div>
+          {uploadError && <div className="mb-3 text-xs text-rose-300">{uploadError}</div>}
           <div className="h-[340px] md:h-[420px]">
-            <LiveFeed cam={displayCam} boxes={boxes} roi={roi} streamUrl={activeStreamUrl} playing={playing} />
+            <LiveFeed cam={displayCam} boxes={boxes} roi={roi} streamUrl={activeStreamUrl} playing={playing} backendOnline={backendOnline} />
           </div>
         </div>
 

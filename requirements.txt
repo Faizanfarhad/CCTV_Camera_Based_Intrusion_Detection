@@ -5,6 +5,7 @@ numpy>=2.5.1
 
 # Web dashboard backend (Sentinel FastAPI service)
 fastapi>=0.110
+python-multipart>=0.0.9
 uvicorn[standard]>=0.29
 ultralytics>=8.0
 python-dotenv>=1.0

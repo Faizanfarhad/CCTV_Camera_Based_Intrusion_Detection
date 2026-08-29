@@ -275,7 +275,7 @@ Three pages are available in the sidebar:
 
 | Page | What it does |
 |---|---|
-| **Live Feed** | Streams a camera with ROI/detection overlays. Includes a **Live Camera / Saved Video** toggle: **Live Camera** streams the webcam (`/api/stream/live`), **Saved Video** lets you pick any recorded clip from `saved_videos/` or `testVideo/`. Also shows camera status, ROI status, 24h detections, and average confidence. |
+| **Live Feed** | Select **Saved Video** to upload one clip and run ROI/person detection on demand. The temporary upload is processed once and removed after playback, so opening the dashboard does not start a camera or video-processing job. Also shows camera status, ROI status, 24h detections, and average confidence. |
 | **Alerts & History** | Live alert ticker + searchable/filterable history, with a button to mark each alert handled. |
 | **ROI Config** | Draw one polygon ROI on a canvas, save it, or clear it. |
 
@@ -303,7 +303,9 @@ Base URL: `http://localhost:8000`
 | `GET` | `/api/retention` | Get automatic alert-history cleanup settings. |
 | `PUT` | `/api/retention` | Set cleanup. Body: `{"enabled": true, "amount": 7, "unit": "days"}`. Only events older than the selected age are deleted. |
 | `GET` | `/api/videos` | List saved/recorded videos available for playback. |
+| `POST` | `/api/videos/upload` | Upload one video for on-demand detection. Multipart field: `file`. |
 | `GET` | `/api/stream/live` | MJPEG stream from the live camera (OpenCV device `0`). |
+| `GET` | `/api/stream/upload/{video_id}` | Run detection once on a temporary uploaded video. |
 | `GET` | `/api/stream/video/{video_id}` | MJPEG stream of a saved video by its id from `/api/videos`. |
 | `GET` | `/api/stream/{camera_id}` | MJPEG live feed of a configured camera (`multipart/x-mixed-replace`). |
 
@@ -413,14 +415,13 @@ CAMERA_SOURCE=rtsp://username:password@camera-host:554/stream
 
 On Render, a laptop/USB camera is not available, and ignored local folders such
 as `testVideo/` are not deployed. Set `CAMERA_SOURCE` to a reachable RTSP/IP
-camera URL, or use a video file that is present in the deployed container.
-The **Live Camera** toggle is therefore shown only when the dashboard is run
-locally.
+camera URL if you need the configured camera API. The dashboard itself uses
+on-demand uploaded videos and does not start that camera automatically.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `LIVE_CAMERA_INDEX` | `0` | OpenCV device index used by the **Live Camera** toggle. |
-| `VIDEO_DIRS` | `saved_videos/`, `testVideo/` | Folders scanned for the **Saved Video** dropdown. |
+| `LIVE_CAMERA_INDEX` | `0` | OpenCV device index used only by the optional live-camera API route. |
+| `VIDEO_DIRS` | `saved_videos/`, `testVideo/` | Folders scanned by the legacy saved-video API. |
 | `VIDEO_EXTENSIONS` | `.mp4`, `.avi`, `.mov`, `.mkv` | File types listed in the dropdown. |
 
 ### Detection / streaming tuning

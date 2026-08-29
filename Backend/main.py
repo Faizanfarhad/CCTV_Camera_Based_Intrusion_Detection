@@ -13,12 +13,13 @@ import json
 import logging
 import os
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
 import cv2
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import File, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -107,6 +108,12 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
+# Uploaded review videos are temporary. They are kept outside VIDEO_DIRS so
+# they do not appear as permanent saved videos and are removed after playback.
+UPLOAD_DIR = BASE_DIR / "data" / "uploads"
+_uploaded_videos: dict[str, tuple[Path, str]] = {}
+_uploaded_videos_lock = threading.Lock()
+
 
 def find_camera(camera_id: str) -> Optional[dict]:
     return next((c for c in SOURCES if c["id"] == camera_id), None)
@@ -145,7 +152,23 @@ def _resolve_video(video_id: str) -> Optional[Path]:
                 return candidate
     return None
 
-    return next((c for c in SOURCES if c["id"] == camera_id), None)
+
+def _get_uploaded_video(video_id: str) -> Optional[tuple[Path, str]]:
+    with _uploaded_videos_lock:
+        item = _uploaded_videos.get(video_id)
+    if item is None or not item[0].is_file():
+        return None
+    return item
+
+
+def _remove_uploaded_video(video_id: str) -> None:
+    with _uploaded_videos_lock:
+        item = _uploaded_videos.pop(video_id, None)
+    if item is not None:
+        try:
+            item[0].unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary upload %s", item[0])
 
 
 def build_stats() -> dict:
@@ -389,16 +412,23 @@ async def put_notifications(payload: NotificationIn):
 # --------------------------------------------------------------------------- #
 # Live MJPEG stream
 # --------------------------------------------------------------------------- #
-def _mjpeg_generator(proc):
+def _mjpeg_generator(proc, cleanup_upload_id: Optional[str] = None):
     last_seq = -1
-    while proc.is_alive():
-        seq, jpeg = proc.wait_for_frame(timeout=1.0)
-        if jpeg is not None and seq != last_seq:
-            last_seq = seq
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-            )
+    try:
+        while True:
+            seq, jpeg = proc.wait_for_frame(timeout=1.0)
+            if jpeg is not None and seq != last_seq:
+                last_seq = seq
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+            elif not proc.is_alive():
+                break
+    finally:
+        if cleanup_upload_id:
+            manager.stop(proc.camera["id"])
+            _remove_uploaded_video(cleanup_upload_id)
 
 
 
@@ -407,6 +437,43 @@ def _mjpeg_generator(proc):
 async def get_videos():
     """List saved/recorded videos that can be played from the dashboard."""
     return _list_videos()
+
+
+@app.post("/api/videos/upload")
+async def upload_video(file: UploadFile = File(...)):
+    """Accept one video for on-demand detection and return a temporary id."""
+    filename = Path(file.filename or "").name
+    suffix = Path(filename).suffix.lower()
+    if not filename or suffix not in VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video type. Use: {', '.join(sorted(VIDEO_EXTENSIONS))}",
+        )
+
+    video_id = uuid.uuid4().hex
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    path = UPLOAD_DIR / f"{video_id}{suffix}"
+    try:
+        with path.open("wb") as destination:
+            while chunk := await file.read(1024 * 1024):
+                destination.write(chunk)
+    except Exception as exc:  # noqa: BLE001 - convert upload failures to HTTP errors
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Could not save uploaded video.") from exc
+    finally:
+        await file.close()
+
+    cap = cv2.VideoCapture(str(path))
+    valid = cap.isOpened()
+    cap.release()
+    if not valid:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The uploaded file is not a readable video.")
+
+    with _uploaded_videos_lock:
+        _uploaded_videos[video_id] = (path, filename)
+    logger.info("Accepted temporary video upload %s", filename)
+    return {"id": video_id, "name": filename}
 
 
 @app.get("/api/stream/live")
@@ -430,6 +497,30 @@ async def stream_live():
     proc = manager.ensure(camera)
     return StreamingResponse(
         _mjpeg_generator(proc),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/api/stream/upload/{video_id}")
+async def stream_uploaded_video(video_id: str):
+    """Run detection once on a temporary video upload."""
+    item = _get_uploaded_video(video_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Uploaded video not found or expired.")
+    path, filename = item
+    camera = {
+        "id": f"upload:{video_id}",
+        "name": filename,
+        "kind": "video",
+        "source": str(path),
+        "enabled": True,
+        "loop_video": False,
+        "fps": 0,
+        "res": "—",
+    }
+    proc = manager.ensure(camera)
+    return StreamingResponse(
+        _mjpeg_generator(proc, cleanup_upload_id=video_id),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
