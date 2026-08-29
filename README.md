@@ -396,7 +396,7 @@ The application uses one configured camera entry:
     "id": "cam-01",
     "name": "Perimeter Gate",
     "kind": "video",          # "video" (file path) or "camera" (device index)
-    "source": "/abs/path/to/file.mp4",  # or 0 for the first USB webcam
+    "source": "/abs/path/to/file.mp4",  # or an RTSP/IP-camera URL
     "enabled": True,          # False marks the camera offline
     "fps": 14,
     "res": "1080p",
@@ -404,6 +404,18 @@ The application uses one configured camera entry:
 ```
 
 ### Live camera & saved videos
+
+The configured `cam-01` source can be overridden without changing code:
+
+```text
+CAMERA_SOURCE=rtsp://username:password@camera-host:554/stream
+```
+
+On Render, a laptop/USB camera is not available, and ignored local folders such
+as `testVideo/` are not deployed. Set `CAMERA_SOURCE` to a reachable RTSP/IP
+camera URL, or use a video file that is present in the deployed container.
+The **Live Camera** toggle is therefore shown only when the dashboard is run
+locally.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -462,14 +474,15 @@ python3 VideoIngestion/video_input.py
 
 - **`Backend offline` in the dashboard**
   The FastAPI server is not running. Start it with
-  `python3 -m uvicorn Backend.main:app --port 8000`.
+  `python3 -m uvicorn Backend.main:app --host 0.0.0.0 --port 8000`.
 
 - **Live feed shows black / no frames**
-  Check that the camera's `source` path exists and is readable, and that the
-  camera is `"enabled": true` in `Backend/config.py`.
+  Check that `CAMERA_SOURCE` is reachable from the server, and that the camera
+  is `"enabled": true` in `Backend/config.py`. Render cannot access a camera
+  attached to your personal computer.
 
 - **YOLO/`ultralytics` import error**
-  Install dependencies with `pip install -r requriments.txt` and ensure
+  Install dependencies with `pip install -r requirements.txt` and ensure
   `yolov8n.pt` is in the project root.
 
 - **Email/WhatsApp not arriving**
