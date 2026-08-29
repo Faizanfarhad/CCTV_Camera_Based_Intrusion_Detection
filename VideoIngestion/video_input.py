@@ -40,7 +40,7 @@ class VideoIngestion:
         self.previous_frames = deque(maxlen=125)
         self.anomaly_writer = None
         self.video_count = 0
-        
+        self.anamaly_score = None
         # ROI-based anomaly detection runs per frame on the polygon the user
         # draws during `select_points` (see `run`). The FUVAS video model is a
         # separate, training-required path in pretrianed_anomaly_detection.py.
@@ -147,7 +147,7 @@ class VideoIngestion:
                 roi_frame = None
                 if len(self.points) >= 3:
                     roi_frame, _ = extract_roi(denoised_frame, self.points)
-                    is_anomaly, anomaly_score = detect_anomaly(roi_frame)
+                    is_anomaly, self.anomaly_score = detect_anomaly(roi_frame)
                     
                     # Draw the selected polygon and anomaly status on the feed.
                     cv2.polylines(
@@ -160,7 +160,7 @@ class VideoIngestion:
                     color = (0, 0, 255) if is_anomaly else (0, 255, 0)
                     cv2.putText(
                         denoised_frame,
-                        f"Anomaly: {'YES' if is_anomaly else 'no'} ({anomaly_score:.3f})",
+                        f"Anomaly: {'YES' if is_anomaly else 'no'} ({self.anomaly_score:.3f})",
                         (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.8,
@@ -169,7 +169,7 @@ class VideoIngestion:
                     )
                 
                 ######## Saving the video if anomaly detected with the buffer 
-                if anomaly_score >= 0.2 and self.anomaly_writer is None:
+                if self.anomaly_score >= 0.2 and self.anomaly_writer is None:
                     H,W  = denoised_frame.shape[:2]
                     fourcc = cv2.VideoWriter.fourcc(*"mp4v")
                     self.anomaly_writer = cv2.VideoWriter(
@@ -223,8 +223,8 @@ class VideoIngestion:
             cap.release()
             cv2.destroyAllWindows()
 
-path = "testVideo/hit_and_run.mp4"
 if __name__ == "__main__":
+    path = "testVideo/hit_and_run.mp4"
     from DetectionEngine.visualize_polyogn import show
     # method options: "fast", "nlm", "bilateral", "median", "gaussian", "none"
     video = VideoIngestion(path, denoise="fast")

@@ -66,6 +66,12 @@ class RetentionIn(BaseModel):
     unit: Literal["hours", "days"] = "days"
 
 
+class NotificationIn(BaseModel):
+    enabled: bool = False
+    email: str = Field(default="", max_length=320)
+    whatsapp: str = Field(default="", max_length=32)
+
+
 class ConnectionManager:
     """Tracks open WebSocket clients and pushes JSON messages to them."""
 
@@ -161,7 +167,9 @@ def maybe_send_alerts(event: dict) -> None:
     are opt-in and are sent only when confidence is greater than the configured
     threshold.
     """
-    if os.getenv("ENABLE_ALERTS") != "1":
+    notification_settings = store.get_notification_settings()
+    if not notification_settings["enabled"]:
+        logger.info("External alerts are disabled")
         return
     confidence = float(event.get("conf", 0.0))
     if confidence <= config_module.ALERT_CONFIDENCE_THRESHOLD:
@@ -177,13 +185,15 @@ def maybe_send_alerts(event: dict) -> None:
         f"Intrusion detected: {event['cam']} / {event['roi']} "
         f"(confidence {confidence:.2f})"
     )
-    if os.getenv("ALERT_MAIL_TO"):
+    email_recipient = notification_settings["email"]
+    whatsapp_recipient = notification_settings["whatsapp"]
+    if email_recipient:
         try:
             from AlertSystem.mail_alert import MailAlert
 
             result = MailAlert().send(
                 sender=os.getenv("ALERT_MAIL_FROM", "onboarding@resend.dev"),
-                reciever=os.getenv("ALERT_MAIL_TO"),
+                reciever=email_recipient,
                 subject="CCTV Intrusion Alert",
                 message=message,
             )
@@ -191,11 +201,11 @@ def maybe_send_alerts(event: dict) -> None:
                 logger.warning("Email alert did not return a response")
         except Exception as exc:  # noqa: BLE001 - never break the pipeline
             logger.warning("Mail alert failed: %s", exc)
-    if os.getenv("ALERT_WHATSAPP_TO"):
+    if whatsapp_recipient:
         try:
             from AlertSystem.whatsapp_alert import WhatsAPPAlert
 
-            result = WhatsAPPAlert(os.getenv("ALERT_WHATSAPP_TO"), message).send()
+            result = WhatsAPPAlert(whatsapp_recipient, message).send()
             if isinstance(result, dict) and result.get("status") == "failed":
                 logger.warning("WhatsApp alert failed: %s", result.get("error", "unknown error"))
         except Exception as exc:  # noqa: BLE001
@@ -355,6 +365,25 @@ async def put_retention(payload: RetentionIn):
     if deleted:
         logger.info("Removed %d expired alert result(s) after retention update", deleted)
     return retention
+
+
+@app.get("/api/notifications")
+async def get_notifications():
+    return store.get_notification_settings()
+
+
+@app.put("/api/notifications")
+async def put_notifications(payload: NotificationIn):
+    if payload.enabled and not (payload.email.strip() or payload.whatsapp.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail="Add an email address or WhatsApp number before enabling alerts.",
+        )
+    return store.save_notification_settings(
+        payload.enabled,
+        payload.email,
+        payload.whatsapp,
+    )
 
 
 # --------------------------------------------------------------------------- #

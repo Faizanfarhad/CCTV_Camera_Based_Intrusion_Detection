@@ -7,6 +7,7 @@ threads design used here.
 """
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -19,6 +20,12 @@ DEFAULT_RETENTION = {
     "enabled": False,
     "amount": 7,
     "unit": "days",
+}
+
+DEFAULT_NOTIFICATION_SETTINGS = {
+    "enabled": False,
+    "email": "",
+    "whatsapp": "",
 }
 
 
@@ -78,6 +85,15 @@ def init_db() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
             ("alert_retention", json.dumps(DEFAULT_RETENTION)),
+        )
+        notification_defaults = {
+            "enabled": os.getenv("ENABLE_ALERTS") == "1",
+            "email": os.getenv("ALERT_MAIL_TO", "").strip(),
+            "whatsapp": os.getenv("ALERT_WHATSAPP_TO", "").strip(),
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            ("notification_settings", json.dumps(notification_defaults)),
         )
         event_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()
@@ -329,6 +345,44 @@ def purge_expired_events() -> int:
         deleted = cur.rowcount
         conn.close()
     return deleted
+
+
+def _normalize_notification_settings(value: dict | None) -> dict:
+    value = value or {}
+    return {
+        "enabled": bool(value.get("enabled", DEFAULT_NOTIFICATION_SETTINGS["enabled"])),
+        "email": str(value.get("email", "") or "").strip(),
+        "whatsapp": str(value.get("whatsapp", "") or "").strip(),
+    }
+
+
+def get_notification_settings() -> dict:
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'notification_settings'"
+        ).fetchone()
+        conn.close()
+    try:
+        value = json.loads(row["value"]) if row else DEFAULT_NOTIFICATION_SETTINGS
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = DEFAULT_NOTIFICATION_SETTINGS
+    return _normalize_notification_settings(value)
+
+
+def save_notification_settings(enabled: bool, email: str, whatsapp: str) -> dict:
+    settings = _normalize_notification_settings(
+        {"enabled": enabled, "email": email, "whatsapp": whatsapp}
+    )
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("notification_settings", json.dumps(settings)),
+        )
+        conn.commit()
+        conn.close()
+    return settings
 
 
 def stats() -> dict:

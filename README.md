@@ -346,8 +346,12 @@ different camera/video resolutions.
 ## Alert Integrations
 
 Alert sending is **opt-in** to avoid spamming real recipients while developing.
+Register the email address and WhatsApp number in the dashboard's
+**Notifications** section, enable notifications, and save. The server-side
+API credentials remain in the .env file.
 
-Enable it:
+For an existing .env-based setup, ENABLE_ALERTS=1 seeds notifications as
+enabled on the first startup:
 
 ```bash
 export ENABLE_ALERTS=1
@@ -355,18 +359,16 @@ export ENABLE_ALERTS=1
 
 Or add `ENABLE_ALERTS=1` to `.env`; the backend loads `.env` at startup.
 
-Then set the recipients/credentials in `.env`:
+Then set the server credentials in `.env`:
 
 ```dotenv
 # Email via Resend
 ENABLE_ALERTS=1
 RESEND_API = "your_resend_api_key"
 ALERT_MAIL_FROM = "onboarding@resend.dev"
-ALERT_MAIL_TO = "you@example.com"
 
 # WhatsApp via UltraMsg
 WHATSAPP_API = "your_ultramsg_token"
-ALERT_WHATSAPP_TO = "+911234567890"
 ```
 
 Modules used:
@@ -375,7 +377,8 @@ Modules used:
 - `AlertSystem/whatsapp_alert.py` — sends a WhatsApp message through UltraMsg.
 - `AlertSystem/message_alert.py` — SMS placeholder (MailerSend example, commented out).
 
-If the relevant env vars are missing or `ENABLE_ALERTS != 1`, the backend simply
+The dashboard stores the registered email and WhatsApp number in SQLite. If
+notifications are disabled or no recipient is registered, the backend simply
 logs the event without sending anything.
 
 ---
@@ -417,7 +420,7 @@ The application uses one configured camera entry:
 | `PERSON_CONF_THRESHOLD` | `0.35` | Minimum YOLO confidence for a valid person. |
 | `ANOMALY_THRESHOLD` | `0.02` | Motion fraction inside the ROI that counts as anomalous. |
 | `ALERT_DEBOUNCE_SECONDS` | `30` | Minimum seconds between ROI alerts. |
-| `ALERT_CONFIDENCE_THRESHOLD` | `0.75` | Email/WhatsApp notifications require confidence strictly greater than 75%. |
+| `ALERT_CONFIDENCE_THRESHOLD` | `0.70` | Email/WhatsApp notifications require confidence strictly greater than 70%. |
 | `STREAM_FPS` | `12` | Target processing/streaming rate. |
 | `JPEG_QUALITY` | `70` | MJPEG frame quality. |
 

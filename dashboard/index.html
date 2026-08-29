@@ -75,6 +75,7 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
 const I = {
   camera: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M15 10l4.5-2.5v9L15 14"/><rect x="3" y="6" width="13" height="12" rx="2"/></svg>,
   alert: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l9 16H3l9-16z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".5"/></svg>,
+  bell: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>,
   roi: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 4h7l2 3h7v13H4z"/></svg>,
   history: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/><path d="M12 7v5l3 2"/></svg>,
   shield: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l8 3v6c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V6l8-3z"/></svg>,
@@ -544,6 +545,71 @@ function ROIPage({ roi, onSaveROI, onToggleROI, onDeleteROI }) {
   );
 }
 
+function NotificationPage({ notifications, onSaveNotifications }) {
+  const [enabled, setEnabled] = useState(Boolean(notifications?.enabled));
+  const [email, setEmail] = useState(notifications?.email || "");
+  const [whatsapp, setWhatsapp] = useState(notifications?.whatsapp || "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEnabled(Boolean(notifications?.enabled));
+    setEmail(notifications?.email || "");
+    setWhatsapp(notifications?.whatsapp || "");
+  }, [notifications?.enabled, notifications?.email, notifications?.whatsapp]);
+
+  const save = async () => {
+    setSaving(true);
+    await onSaveNotifications({ enabled, email, whatsapp });
+    setSaving(false);
+  };
+
+  return (
+    <div className="float-in max-w-3xl space-y-4">
+      <div className="glass rounded-2xl p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-cyan-500/15 grid place-items-center text-cyan-300"><I.bell className="w-5 h-5"/></div>
+          <div>
+            <div className="text-base font-semibold">Alert notifications</div>
+            <div className="text-xs text-slate-400 mt-1">Register where high-confidence ROI intrusions should be sent.</div>
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+          <div>
+            <div className="text-sm font-medium">Enable email and WhatsApp alerts</div>
+            <div className="text-[11px] text-slate-500 mt-1">Alerts are sent when person confidence is above 70%.</div>
+          </div>
+          <button type="button" role="switch" aria-checked={enabled} onClick={()=>setEnabled(v=>!v)}
+            className={"relative w-11 h-6 rounded-full transition " + (enabled ? "bg-cyan-500" : "bg-slate-700")}>
+            <span className={"absolute top-1 w-4 h-4 rounded-full bg-white transition " + (enabled ? "left-6" : "left-1")} />
+          </button>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-4 mt-4">
+          <label className="text-xs text-slate-300">
+            Email address
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"
+              className="mt-2 w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2.5 text-sm" />
+          </label>
+          <label className="text-xs text-slate-300">
+            WhatsApp mobile number
+            <input type="tel" value={whatsapp} onChange={e=>setWhatsapp(e.target.value)} placeholder="+911234567890"
+              className="mt-2 w-full bg-slate-900/80 border border-slate-700 rounded-lg px-3 py-2.5 text-sm" />
+          </label>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="text-[11px] text-slate-500">API credentials remain in the server .env file.</div>
+          <button type="button" onClick={save} disabled={saving}
+            className="px-4 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-xs hover:bg-cyan-500/25 disabled:opacity-50">
+            {saving ? "Saving…" : "Save notification settings"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- App shell ---------------- */
 function App() {
   const [page, setPage] = useState("live");
@@ -558,6 +624,7 @@ function App() {
     avg_confidence: 0.924,
   });
   const [retention, setRetention] = useState({ enabled: false, amount: 7, unit: "days" });
+  const [notifications, setNotifications] = useState({ enabled: false, email: "", whatsapp: "" });
   const [backendOnline, setBackendOnline] = useState(false);
   const [ws, setWs] = useState("connecting");
   const [clock, setClock] = useState(new Date());
@@ -573,12 +640,13 @@ function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [camRes, roiRes, alertRes, statRes, retentionRes] = await Promise.all([
+        const [camRes, roiRes, alertRes, statRes, retentionRes, notificationRes] = await Promise.all([
           apiFetch("/api/cameras"),
           apiFetch("/api/roi"),
           apiFetch("/api/alerts?limit=200"),
           apiFetch("/api/stats"),
           apiFetch("/api/retention"),
+          apiFetch("/api/notifications"),
         ]);
         if (cancelled) return;
         setCameras(camRes);
@@ -586,6 +654,7 @@ function App() {
         setAlerts(alertRes.map(normalizeAlert));
         setStats(statRes);
         setRetention(retentionRes);
+        setNotifications(notificationRes);
         setBackendOnline(true);
       } catch {
         if (!cancelled) setBackendOnline(false);
@@ -716,9 +785,32 @@ function App() {
     }
   };
 
+  const saveNotifications = async (next) => {
+    const normalized = {
+      enabled: Boolean(next.enabled),
+      email: String(next.email || "").trim(),
+      whatsapp: String(next.whatsapp || "").trim(),
+    };
+    const previous = notifications;
+    setNotifications(normalized);
+    try {
+      const saved = await apiFetch("/api/notifications", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(normalized),
+      });
+      setNotifications(saved);
+      return saved;
+    } catch {
+      setNotifications(previous);
+      return null;
+    }
+  };
+
   const nav = [
     { key: "live", label: "Live Feed", icon: I.camera },
     { key: "alerts", label: "Alerts & History", icon: I.alert },
+    { key: "notifications", label: "Notifications", icon: I.bell },
     { key: "roi", label: "ROI Config", icon: I.roi },
   ];
 
@@ -785,6 +877,7 @@ function App() {
 
         {page === "live" && <LivePage cameras={cameras} roi={roi} backendOnline={backendOnline} stats={stats} />}
         {page === "alerts" && <AlertsPage alerts={alerts} onToggle={toggleAlert} retention={retention} onSaveRetention={saveRetention} />}
+        {page === "notifications" && <NotificationPage notifications={notifications} onSaveNotifications={saveNotifications} />}
         {page === "roi" && <ROIPage roi={roi} onSaveROI={saveROI} onToggleROI={toggleROI} onDeleteROI={deleteROI} />}
       </main>
     </div>
