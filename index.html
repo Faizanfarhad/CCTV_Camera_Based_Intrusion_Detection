@@ -250,7 +250,6 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const videoInputRef = useRef(null);
-  const cam = cameras[0] || CAMERAS[0];
 
   const selectLiveVideo = () => {
     setUploadError("");
@@ -291,16 +290,16 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
     }
   };
 
-  const liveStreamUrl = backendOnline && cam
-    ? (cam.stream ? API + cam.stream : API + `/api/stream/${cam.id}`)
-    : null;
+  // Live Video always uses the integrated webcam on the backend host.
+  // It is intentionally separate from the uploaded-video processing route.
+  const liveStreamUrl = backendOnline ? API + "/api/stream/live" : null;
   const activeStreamUrl = feedMode === "live"
     ? liveStreamUrl
     : feedMode === "video" && backendOnline && uploadedVideo
       ? API + `/api/stream/upload/${uploadedVideo.id}`
       : null;
   const displayCam = feedMode === "live"
-    ? { ...cam, name: cam.name || "Live Video" }
+    ? { id: "live", name: "Integrated Camera", fps: "—", res: "—" }
     : uploadedVideo
     ? { id: "upload", name: uploadedVideo.name, fps: "—", res: "—" }
     : { id: "saved-video", name: "Saved Video", fps: "—", res: "—" };
