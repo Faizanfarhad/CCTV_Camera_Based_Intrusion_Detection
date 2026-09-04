@@ -184,6 +184,18 @@ def build_stats() -> dict:
     }
 
 
+def _mask_recipient(value: str) -> str:
+    """Keep alert logs useful without exposing full email/phone details."""
+    recipient = str(value or "")
+    if "@" in recipient:
+        local, domain = recipient.split("@", 1)
+        return f"{local[:2]}***@{domain}"
+    digits = "".join(character for character in recipient if character.isdigit())
+    if len(digits) <= 4:
+        return "***"
+    return f"+***{digits[-4:]}"
+
+
 def maybe_send_alerts(event: dict) -> None:
     """Forward high-confidence intrusions to the alert modules when enabled.
 
@@ -211,10 +223,22 @@ def maybe_send_alerts(event: dict) -> None:
     )
     email_recipient = notification_settings["email"]
     whatsapp_recipient = notification_settings["whatsapp"]
+    if not email_recipient and not whatsapp_recipient:
+        logger.warning("External alert triggered, but no recipients are registered")
+        return
+
+    logger.info(
+        "External alert triggered for %s (confidence %.1f%%, threshold %.1f%%)",
+        event.get("cam", "unknown"),
+        confidence * 100,
+        config_module.ALERT_CONFIDENCE_THRESHOLD * 100,
+    )
     if email_recipient:
         try:
             from AlertSystem.mail_alert import MailAlert
 
+            masked_email = _mask_recipient(email_recipient)
+            logger.info("Sending email alert to %s", masked_email)
             result = MailAlert().send(
                 sender=os.getenv("ALERT_MAIL_FROM", "onboarding@resend.dev"),
                 reciever=email_recipient,
@@ -222,18 +246,32 @@ def maybe_send_alerts(event: dict) -> None:
                 message=message,
             )
             if result is None:
-                logger.warning("Email alert did not return a response")
+                logger.error("EMAIL ALERT FAILED for %s: provider returned no response", masked_email)
+            else:
+                logger.info("EMAIL ALERT ACCEPTED by provider for %s", masked_email)
         except Exception as exc:  # noqa: BLE001 - never break the pipeline
-            logger.warning("Mail alert failed: %s", exc)
+            logger.error("EMAIL ALERT FAILED for %s: %s", _mask_recipient(email_recipient), exc)
     if whatsapp_recipient:
         try:
             from AlertSystem.whatsapp_alert import WhatsAPPAlert
 
+            masked_whatsapp = _mask_recipient(whatsapp_recipient)
+            logger.info("Sending WhatsApp alert to %s", masked_whatsapp)
             result = WhatsAPPAlert(whatsapp_recipient, message).send()
             if isinstance(result, dict) and result.get("status") == "failed":
-                logger.warning("WhatsApp alert failed: %s", result.get("error", "unknown error"))
+                logger.error(
+                    "WHATSAPP ALERT FAILED for %s: %s",
+                    masked_whatsapp,
+                    result.get("error", "unknown error"),
+                )
+            else:
+                logger.info("WHATSAPP ALERT ACCEPTED by provider for %s", masked_whatsapp)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("WhatsApp alert failed: %s", exc)
+            logger.error(
+                "WHATSAPP ALERT FAILED for %s: %s",
+                _mask_recipient(whatsapp_recipient),
+                exc,
+            )
 
 
 def on_alert(camera: dict, roi: dict, confidence: float, event_type: str, snapshot_path: str) -> None:
