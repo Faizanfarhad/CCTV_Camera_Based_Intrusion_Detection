@@ -49,7 +49,7 @@ The project is split into three layers:
 - **Evidence capture** — annotated snapshot saved for every alert.
 - **Persistent history** — SQLite database of ROI and alert events.
 - **Real-time dashboard** — live MJPEG feed, live alert feed, ROI editor.
-- **Optional integrations** — email (Resend) and WhatsApp (UltraMsg).
+- **Optional integrations** — email (Resend) and WhatsApp (WasenderAPI).
 
 ---
 
@@ -142,7 +142,7 @@ For every captured frame, the backend processor:
 ├── AlertSystem/                 # Notification integrations
 │   ├── mail_alert.py            #   Resend email alert
 │   ├── message_alert.py         #   SMS placeholder (MailerSend, commented)
-│   └── whatsapp_alert.py        #   UltraMsg WhatsApp alert
+│   └── whatsapp_alert.py        #   WasenderAPI WhatsApp alert
 ├── Backend/                     # FastAPI service (connects pipeline to dashboard)
 │   ├── __init__.py
 │   ├── config.py                #   sources, ROI, detection/stream tuning
@@ -185,7 +185,7 @@ For every captured frame, the backend processor:
 | [pydantic](https://docs.pydantic.dev/) | (bundled with FastAPI) | Request/response validation models. |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | `1.2.3` | Loads `.env` API keys. |
 | [resend](https://resend.com/) | `2.42.0` | Email alert sending. |
-| [requests](https://requests.readthedocs.io/) | `2.34.2` | HTTP calls to the WhatsApp (UltraMsg) API. |
+| [requests](https://requests.readthedocs.io/) | `2.34.2` | HTTP calls to the WhatsApp API. |
 | `sqlite3` (stdlib) | built-in | Persistent storage of the ROI and alert events. |
 | `threading` (stdlib) | built-in | Per-camera detection threads, locks, and WebSocket fan-out. |
 
@@ -371,14 +371,17 @@ ENABLE_ALERTS=1
 RESEND_API = "your_resend_api_key"
 ALERT_MAIL_FROM = "onboarding@resend.dev"
 
-# WhatsApp via UltraMsg
-WHATSAPP_API = "your_ultramsg_token"
+# WhatsApp via WasenderAPI
+WHATSAPP_PROVIDER = "wasenderapi"
+WASENDER_API_KEY = "your_wasenderapi_api_key"
+# Optional override; the default is https://www.wasenderapi.com/api/send-message
+# WASENDER_API_URL = "https://www.wasenderapi.com/api/send-message"
 ```
 
 Modules used:
 
 - `AlertSystem/mail_alert.py` — sends an HTML email through Resend.
-- `AlertSystem/whatsapp_alert.py` — sends a WhatsApp message through UltraMsg.
+- `AlertSystem/whatsapp_alert.py` — sends a WhatsApp message through WasenderAPI.
 - `AlertSystem/message_alert.py` — SMS placeholder (MailerSend example, commented out).
 
 The dashboard stores the registered email and WhatsApp number in SQLite. If
