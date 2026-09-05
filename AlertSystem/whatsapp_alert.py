@@ -79,9 +79,3 @@ class WhatsAPPAlert:
             return {"status": "failed", "error": f"Invalid WhatsApp API response: {exc}"}
 
 
-if __name__ == "__main__":
-    mobile = "+919310905797"
-    message = "Alert: Intrusion detected in the ROI."
-    print(WhatsAPPAlert(mobile, message).send())
-
-

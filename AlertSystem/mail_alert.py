@@ -31,11 +31,3 @@ class MailAlert:
         return self.response
 
 
-if __name__ == "__main__":
-    mail_sender = MailAlert()
-    sender = "onboarding@resend.dev"
-    reciever = "faizanfarhad2211@gmail.com"
-    subject = "mail sender testing"
-    message = "this message currently is in testing"
-    response = mail_sender.send(sender,reciever,subject,message)
-    print(response)
