@@ -15,6 +15,7 @@ import os
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -114,6 +115,192 @@ ws_manager = ConnectionManager()
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
 _uploaded_videos: dict[str, tuple[Path, str]] = {}
 _uploaded_videos_lock = threading.Lock()
+
+# Batch review videos are processed one at a time. The YOLO instance is shared
+# with the live processor, and the single worker prevents several large videos
+# from competing for the same model/CPU at once.
+_analysis_jobs: dict[str, dict] = {}
+_analysis_jobs_lock = threading.Lock()
+_analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-analysis")
+
+
+def _public_analysis_job(job: dict) -> dict:
+    """Return a JSON-safe job view without exposing temporary server paths."""
+    result = {key: value for key, value in job.items() if key != "items"}
+    result["items"] = [
+        {key: value for key, value in item.items() if key != "path"}
+        for item in job.get("items", [])
+    ]
+    return result
+
+
+def _update_analysis_job(job_id: str, **changes) -> None:
+    with _analysis_jobs_lock:
+        job = _analysis_jobs.get(job_id)
+        if job is not None:
+            job.update(changes)
+
+
+def _update_analysis_item(job_id: str, item_index: int, **changes) -> None:
+    with _analysis_jobs_lock:
+        job = _analysis_jobs.get(job_id)
+        if job is not None and item_index < len(job["items"]):
+            job["items"][item_index].update(changes)
+
+
+def _run_analysis_job(job_id: str) -> None:
+    """Analyze queued videos sequentially and update their progress in memory."""
+    with _analysis_jobs_lock:
+        job = _analysis_jobs.get(job_id)
+        if job is None:
+            return
+        items = list(job["items"])
+
+    _update_analysis_job(job_id, status="running", current=None, error=None)
+    logger.info("Started batch video analysis %s (%d video(s))", job_id, len(items))
+
+    try:
+        detector = manager._get_bg_detector()
+        for item_index, item in enumerate(items):
+            path = Path(item["path"])
+            name = item["name"]
+            _update_analysis_item(
+                job_id,
+                item_index,
+                status="processing",
+                progress=0,
+                frames=0,
+                detections=0,
+                max_confidence=0.0,
+                error=None,
+            )
+            _update_analysis_job(job_id, current=name)
+            logger.info("Analyzing video %d/%d: %s", item_index + 1, len(items), name)
+
+            cap = cv2.VideoCapture(str(path))
+            if not cap.isOpened():
+                _update_analysis_item(
+                    job_id,
+                    item_index,
+                    status="failed",
+                    error="Video could not be opened",
+                )
+                path.unlink(missing_ok=True)
+                continue
+
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            fps = fps if fps > 0 else 25.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            _update_analysis_item(job_id, item_index, total_frames=total_frames)
+
+            camera = {
+                "id": f"analysis:{job_id}:{item_index}",
+                "name": name,
+                "kind": "video",
+                "source": str(path),
+                "enabled": True,
+                "loop_video": False,
+                "fps": fps,
+                "res": "—",
+            }
+            alert_count = 0
+
+            def batch_alert(camera, roi, confidence, event_type, snapshot_path):
+                nonlocal alert_count
+                alert_count += 1
+                on_alert(camera, roi, confidence, event_type, snapshot_path)
+
+            processor = StreamProcessor(
+                camera,
+                store.get_roi,
+                batch_alert,
+                detector,
+                manager.bg_lock,
+                config_module,
+            )
+            # Offline processing is faster than real time. Use video time for
+            # the existing debounce so one long intrusion is not emitted once
+            # per frame, and allow the first detected intrusion immediately.
+            processor._last_alert = -processor.alert_debounce
+            frame_index = 0
+            intrusion_frames = 0
+            max_confidence = 0.0
+            try:
+                while True:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    processor.process_frame(
+                        frame,
+                        frame_index,
+                        event_time=frame_index / fps,
+                        encode=False,
+                    )
+                    if processor.last_intrusion_count:
+                        intrusion_frames += 1
+                        max_confidence = max(
+                            max_confidence,
+                            processor.last_intrusion_confidence,
+                        )
+                    frame_index += 1
+                    if frame_index % 10 == 0 or frame_index == total_frames:
+                        progress = (
+                            min(100, round(frame_index * 100 / total_frames))
+                            if total_frames
+                            else 0
+                        )
+                        _update_analysis_item(
+                            job_id,
+                            item_index,
+                            progress=progress,
+                            frames=frame_index,
+                            detections=intrusion_frames,
+                            alerts=alert_count,
+                            max_confidence=round(max_confidence, 4),
+                        )
+            finally:
+                cap.release()
+
+            _update_analysis_item(
+                job_id,
+                item_index,
+                status="completed",
+                progress=100,
+                frames=frame_index,
+                detections=intrusion_frames,
+                alerts=alert_count,
+                max_confidence=round(max_confidence, 4),
+            )
+            _update_analysis_job(job_id, completed=item_index + 1)
+            logger.info(
+                "Completed video %s: %d frame(s) with ROI intrusion, %d alert event(s)",
+                name,
+                intrusion_frames,
+                alert_count,
+            )
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove temporary batch video %s", path)
+    except Exception as exc:  # noqa: BLE001 - retain the failure in job status
+        logger.exception("Batch video analysis %s failed", job_id)
+        for item in items:
+            Path(item["path"]).unlink(missing_ok=True)
+        if items:
+            try:
+                Path(items[0]["path"]).parent.rmdir()
+            except OSError:
+                logger.warning("Could not remove temporary batch directory for %s", job_id)
+        _update_analysis_job(job_id, status="failed", current=None, error=str(exc))
+        return
+
+    if items:
+        try:
+            Path(items[0]["path"]).parent.rmdir()
+        except OSError:
+            logger.warning("Could not remove temporary batch directory for %s", job_id)
+    _update_analysis_job(job_id, status="completed", current=None, completed=len(items))
+    logger.info("Finished batch video analysis %s", job_id)
 
 
 def find_camera(camera_id: str) -> Optional[dict]:
@@ -544,6 +731,93 @@ async def upload_video(file: UploadFile = File(...)):
         _uploaded_videos[video_id] = (path, filename)
     logger.info("Accepted temporary video upload %s", filename)
     return {"id": video_id, "name": filename}
+
+
+@app.post("/api/videos/analyze")
+async def analyze_videos(files: list[UploadFile] = File(...)):
+    """Queue multiple uploaded videos for sequential ROI/anomaly analysis."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Select at least one video.")
+
+    job_id = uuid.uuid4().hex
+    job_dir = UPLOAD_DIR / f"batch-{job_id}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    items = []
+    try:
+        for index, file in enumerate(files):
+            filename = Path(file.filename or "").name
+            suffix = Path(filename).suffix.lower()
+            if not filename or suffix not in VIDEO_EXTENSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported video type for {filename or 'unnamed file'}. "
+                    f"Use: {', '.join(sorted(VIDEO_EXTENSIONS))}",
+                )
+
+            path = job_dir / f"{index}{suffix}"
+            try:
+                with path.open("wb") as destination:
+                    while chunk := await file.read(1024 * 1024):
+                        destination.write(chunk)
+            finally:
+                await file.close()
+
+            cap = cv2.VideoCapture(str(path))
+            valid = cap.isOpened()
+            cap.release()
+            if not valid:
+                raise HTTPException(status_code=400, detail=f"{filename} is not a readable video.")
+
+            items.append(
+                {
+                    "id": f"{job_id}-{index}",
+                    "name": filename,
+                    "path": str(path),
+                    "status": "queued",
+                    "progress": 0,
+                    "frames": 0,
+                    "total_frames": 0,
+                    "detections": 0,
+                    "alerts": 0,
+                    "max_confidence": 0.0,
+                    "error": None,
+                }
+            )
+    except HTTPException:
+        for path in job_dir.glob("*"):
+            path.unlink(missing_ok=True)
+        job_dir.rmdir()
+        raise
+    except Exception as exc:  # noqa: BLE001 - convert upload failures to HTTP errors
+        for path in job_dir.glob("*"):
+            path.unlink(missing_ok=True)
+        job_dir.rmdir()
+        raise HTTPException(status_code=500, detail="Could not save batch videos.") from exc
+
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "total": len(items),
+        "completed": 0,
+        "current": None,
+        "error": None,
+        "items": items,
+    }
+    with _analysis_jobs_lock:
+        _analysis_jobs[job_id] = job
+    _analysis_executor.submit(_run_analysis_job, job_id)
+    logger.info("Queued batch video analysis %s with %d video(s)", job_id, len(items))
+    return _public_analysis_job(job)
+
+
+@app.get("/api/videos/analysis/{job_id}")
+async def get_analysis_job(job_id: str):
+    """Return the current status and per-video results for a batch job."""
+    with _analysis_jobs_lock:
+        job = _analysis_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Video analysis job not found.")
+        return _public_analysis_job(job)
 
 
 @app.get("/api/stream/live")

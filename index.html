@@ -381,7 +381,10 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
   const [uploadedVideo, setUploadedVideo] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [analysisJob, setAnalysisJob] = useState(null);
+  const [analysisError, setAnalysisError] = useState("");
   const videoInputRef = useRef(null);
+  const batchVideoInputRef = useRef(null);
 
   const selectLiveVideo = () => {
     setUploadError("");
@@ -421,6 +424,57 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
       setUploading(false);
     }
   };
+
+  const handleBatchVideosSelected = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+    if (!backendOnline) {
+      setAnalysisError("Connect to the backend before analyzing videos.");
+      return;
+    }
+
+    setAnalysisError("");
+    setUploadError("");
+    setUploadedVideo(null);
+    setFeedMode("none");
+    setPlaying(false);
+    setUploading(true);
+    try {
+      const form = new FormData();
+      files.forEach(file => form.append("files", file));
+      const response = await fetch(API + "/api/videos/analyze", {
+        method: "POST",
+        body: form,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `Batch upload failed (${response.status})`);
+      setAnalysisJob(payload);
+    } catch (error) {
+      setAnalysisError(error.message || "Could not queue the selected videos.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!analysisJob?.id || ["completed", "failed"].includes(analysisJob.status)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await apiFetch(`/api/videos/analysis/${analysisJob.id}`);
+        if (!cancelled) setAnalysisJob(next);
+      } catch (error) {
+        if (!cancelled) setAnalysisError(error.message || "Could not read analysis progress.");
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [analysisJob?.id, analysisJob?.status]);
 
   // Live Video sends the browser's integrated webcam frames to the backend.
   // It is intentionally separate from the uploaded-video processing route.
@@ -485,6 +539,11 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
                 className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1 rounded-xl border border-violet-400/40 bg-violet-500/15 text-violet-200 hover:bg-violet-500/25 disabled:opacity-50 disabled:cursor-not-allowed">
                 <I.history className="w-3.5 h-3.5" /> {uploading ? "Uploading…" : "Saved Video"}
               </button>
+              <input ref={batchVideoInputRef} type="file" multiple accept="video/*,.mp4,.avi,.mov,.mkv" className="hidden" onChange={handleBatchVideosSelected} />
+              <button onClick={() => batchVideoInputRef.current?.click()} disabled={uploading || !backendOnline}
+                className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1 rounded-xl border border-amber-400/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed">
+                <I.grid className="w-3.5 h-3.5" /> {uploading ? "Uploading…" : "Analyze Multiple"}
+              </button>
               <button onClick={() => setPlaying(p => !p)} disabled={feedMode === "none" || uploading} aria-label={playing ? "Pause feed" : "Play feed"} title={playing ? "Pause feed" : "Play feed"}
                 className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 grid place-items-center transition disabled:opacity-50 disabled:cursor-not-allowed">
                 {playing ? <I.pause className="w-4 h-4"/> : <I.play className="w-4 h-4"/>}
@@ -492,6 +551,7 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
             </div>
           </div>
           {uploadError && <div className="mb-3 text-xs text-rose-300">{uploadError}</div>}
+          {analysisError && <div className="mb-3 text-xs text-rose-300">{analysisError}</div>}
           <div className="h-[340px] md:h-[420px]">
             {feedMode === "live" ? (
               <BrowserLiveFeed playing={playing} backendOnline={backendOnline} />
@@ -500,6 +560,36 @@ function LivePage({ cameras, roi, backendOnline, stats }) {
             )}
           </div>
         </div>
+
+        {analysisJob && <div className="glass rounded-2xl p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div>
+              <div className="text-sm font-semibold">Batch anomaly analysis</div>
+              <div className="text-xs text-slate-400 mt-1">
+                {analysisJob.status === "completed" ? "Analysis completed" : analysisJob.current ? `Analyzing ${analysisJob.current}` : "Waiting for the analysis worker…"}
+              </div>
+            </div>
+            <span className={`text-xs font-semibold uppercase ${analysisJob.status === "failed" ? "text-rose-300" : analysisJob.status === "completed" ? "text-emerald-300" : "text-cyan-300"}`}>
+              {analysisJob.status}
+            </span>
+          </div>
+          <div className="h-2 rounded-full bg-slate-800 overflow-hidden mb-3">
+            <div className="h-full bg-cyan-400 transition-all" style={{ width: `${analysisJob.total ? (analysisJob.completed / analysisJob.total) * 100 : 0}%` }} />
+          </div>
+          <div className="text-xs text-slate-400 mb-3">{analysisJob.completed || 0} of {analysisJob.total} videos finished</div>
+          <div className="space-y-2">
+            {(analysisJob.items || []).map(item => (
+              <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-xs">
+                <span className="flex-1 min-w-[180px] truncate text-slate-200" title={item.name}>{item.name}</span>
+                <span className={item.status === "failed" ? "text-rose-300" : item.status === "completed" ? "text-emerald-300" : "text-cyan-300"}>{item.status}</span>
+                {item.status === "processing" && <span className="text-slate-400">{item.progress || 0}%</span>}
+                {item.status === "completed" && <span className="text-slate-400">{item.detections || 0} anomaly frame(s) · max {(Number(item.max_confidence || 0) * 100).toFixed(0)}%</span>}
+                {item.error && <span className="basis-full text-rose-300">{item.error}</span>}
+              </div>
+            ))}
+          </div>
+          {analysisJob.error && <div className="mt-3 text-xs text-rose-300">{analysisJob.error}</div>}
+        </div>}
 
       </div>
     </div>

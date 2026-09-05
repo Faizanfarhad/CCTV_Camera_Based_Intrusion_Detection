@@ -121,6 +121,8 @@ class StreamProcessor(threading.Thread):
         self.fps = 0.0
         self._detections = []
         self._logged_inference = False
+        self.last_intrusion_count = 0
+        self.last_intrusion_confidence = 0.0
 
         self.motion = foreground_model(var_threshold=20, min_threshold=200)
 
@@ -218,8 +220,8 @@ class StreamProcessor(threading.Thread):
     def stop(self):
         self._stop.set()
 
-    def process_frame(self, frame, frame_idx=0):
-        """Run MOG2, YOLO, ROI checks and annotation on one BGR frame."""
+    def process_frame(self, frame, frame_idx=0, event_time=None, encode=True):
+        """Run MOG2, YOLO, ROI checks and optional annotation on one BGR frame."""
         started = time.time()
         frame = self._resize(frame, self.process_width)
         denoised = denoise_frame(
@@ -271,8 +273,14 @@ class StreamProcessor(threading.Thread):
             if inside_roi:
                 intrusions.append(det)
 
+        self.last_intrusion_count = len(intrusions)
+        self.last_intrusion_confidence = max(
+            (det["confidence"] for det in intrusions),
+            default=0.0,
+        )
+
         # Emit debounced alerts for person-in-ROI intrusions.
-        now = time.time()
+        now = time.time() if event_time is None else event_time
         if roi and intrusions and now - self._last_alert >= self.alert_debounce:
             self._last_alert = now
             det = intrusions[0]
@@ -302,6 +310,8 @@ class StreamProcessor(threading.Thread):
 
         self.fps = 1.0 / max(0.001, time.time() - started)
         self._draw_status(display, len(detections), pixel_roi is not None)
+        if not encode:
+            return None
         ok, buf = cv2.imencode(
             ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
         )

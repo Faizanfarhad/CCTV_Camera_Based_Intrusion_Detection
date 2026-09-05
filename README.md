@@ -275,7 +275,7 @@ Three pages are available in the sidebar:
 
 | Page | What it does |
 |---|---|
-| **Live Feed** | Use **Live Video** to start/stop ROI/person detection from the browser's integrated camera (frames are sent to `/ws/live`), or use **Saved Video** to upload one clip and process it once. Uploaded files are temporary and removed after playback, so opening the dashboard does not start processing. Also shows camera status, ROI status, 24h detections, and average confidence. |
+| **Live Feed** | Use **Live Video** to start/stop ROI/person detection from the browser's integrated camera (frames are sent to `/ws/live`), **Saved Video** to process one clip, or **Analyze Multiple** to queue several clips for sequential ROI/anomaly detection. Batch progress and per-video detection counts are shown in the dashboard. Uploaded files are temporary and removed after processing/playback. |
 | **Alerts & History** | Live alert ticker + searchable/filterable history, with a button to mark each alert handled. |
 | **ROI Config** | Draw one polygon ROI on a canvas, save it, or clear it. |
 
@@ -305,6 +305,8 @@ Base URL: `http://localhost:8000`
 | `PUT` | `/api/retention` | Set cleanup. Body: `{"enabled": true, "amount": 7, "unit": "days"}`. Only events older than the selected age are deleted. |
 | `GET` | `/api/videos` | List saved/recorded videos available for playback. |
 | `POST` | `/api/videos/upload` | Upload one video for on-demand detection. Multipart field: `file`. |
+| `POST` | `/api/videos/analyze` | Queue multiple videos for sequential ROI/anomaly analysis. Multipart field: `files` (repeat for each video). |
+| `GET` | `/api/videos/analysis/{job_id}` | Get batch status and per-video progress/results. |
 | `GET` | `/api/stream/live` | MJPEG stream from the live camera (OpenCV device `0`). |
 | `WebSocket` | `/ws/live` | Receives browser-camera JPEG frames and returns annotated JPEG frames after MOG2/YOLO/ROI processing. |
 | `GET` | `/api/stream/upload/{video_id}` | Run detection once on a temporary uploaded video. |
@@ -422,7 +424,9 @@ On Render, a laptop/USB camera is not available, and ignored local folders such
 as `testVideo/` are not deployed. Set `CAMERA_SOURCE` to a reachable RTSP/IP
 camera URL if you need the configured camera API. The dashboard's **Live Video**
 button uses the browser's integrated camera and sends frames to the backend for
-MOG2/YOLO/ROI processing, while **Saved Video** uses temporary uploads. The
+MOG2/YOLO/ROI processing, while **Saved Video** and **Analyze Multiple** use
+temporary uploads. The batch worker processes one video at a time and applies
+the configured ROI and the same MOG2/YOLO detector to every frame. The
 legacy `/api/stream/live` route still reads `LIVE_CAMERA_INDEX` on the backend
 host when used directly.
 
