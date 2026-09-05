@@ -42,7 +42,7 @@ from Backend.config import (
     VIDEO_DIRS,
     VIDEO_EXTENSIONS,
 )
-from Backend.processor import StreamManager
+from Backend.processor import StreamManager, StreamProcessor
 
 load_dotenv()
 
